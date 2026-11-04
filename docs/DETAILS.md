@@ -539,6 +539,13 @@ file data; Strata adds the choice of shard, byte budget and pin lifetime. A file
 of RAM holding a portion of a file, so a large shard spans many pages. The implementation queries the OS page
 size rather than assuming one.
 
+The cache owner is one Strata server process, with at most one pinned shard mapping. Repeated unloads keep the
+existing pin, and a failed engine unload does not start another fill. A failed fill releases its partial pin
+before any retry. When the server process exits or crashes, Linux removes its mapping and memory locks; an
+automatic restart therefore cannot inherit a stale pin from the exited process. Ordinary cached file pages may
+remain reclaimable afterward. This is a per-server limit: separate live Strata server processes can each own a
+cache; there is no machine-wide single-cache lock.
+
 **Why ordinary OS file caching is not enough:** Linux already caches buffered model-file reads, and reloads can
 benefit while those pages remain resident. Those ordinary file-cache pages are reclaimable, however: RAM pressure,
 including allocation of the model's arena, can evict them. Freeing the arena on unload does not automatically

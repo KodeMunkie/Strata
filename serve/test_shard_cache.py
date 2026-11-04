@@ -1,9 +1,12 @@
 """File selection, real small Linux locks, and server ownership without loading a model."""
 import ctypes
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import io
 import os
 from pathlib import Path
+import select
+import subprocess
 import sys
 import tempfile
 import threading
@@ -121,6 +124,98 @@ class LinuxPin(unittest.TestCase):
         available = mock.patch.object(cache, 'available_bytes', return_value=128 * cache.GIB)
         available.start()
         self.addCleanup(available.stop)
+
+    def test_repeated_and_concurrent_unload_hooks_keep_one_mapping(self):
+        with cache.ShardCache() as pin:
+            pin.configure({'shard_cache_gib': 1, 'shard_cache_hot_unload': True},
+                          ['--native', str(self.path)])
+            with mock.patch.object(pin, 'pin', wraps=pin.pin) as allocate:
+                with ThreadPoolExecutor(max_workers=4) as workers:
+                    list(workers.map(lambda _: pin.on_unload(), range(16)))
+                address, length = pin.address, pin.length
+                pin.on_unload()
+                self.assertIsNotNone(address)
+                self.assertEqual((pin.address, pin.length), (address, length))
+                allocate.assert_called_once()
+
+    def test_failed_model_unload_does_not_create_another_pin(self):
+        from serve.server import EngineStuck
+        for hot in (False, True):
+            with self.subTest(hot=hot), cache.ShardCache() as pin:
+                svc = self.service()
+                svc.shard_cache = pin
+                pin.configure({'shard_cache_gib': 1, 'shard_cache_hot_unload': hot},
+                              ['--native', str(self.path)])
+                svc.engine.restart()
+                before = (pin.address, pin.length)
+                with mock.patch.object(svc.engine, 'unload', side_effect=EngineStuck('still exiting')), \
+                        mock.patch.object(pin, 'on_unload', wraps=pin.on_unload) as fill, \
+                        self.assertRaises(EngineStuck):
+                    svc.unload()
+                fill.assert_not_called()
+                self.assertEqual((pin.address, pin.length), before)
+                self.assertEqual(svc.unload(), 'unloaded')
+                address = pin.address
+                self.assertIsNotNone(address)
+                self.assertEqual(svc.unload(), 'not loaded')
+                self.assertEqual(pin.address, address)
+
+    def test_sigkill_releases_pin_before_new_owner_starts(self):
+        # Kill only our tiny child. Prove its locked pages become evictable without Python cleanup.
+        page = os.sysconf('SC_PAGE_SIZE')
+        length = 2 * page
+        self.path.write_bytes(b'x' * length)
+        fd = os.open(self.path, os.O_RDWR)
+        os.fsync(fd)
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mmap.restype = ctypes.c_void_p
+        libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                              ctypes.c_int, ctypes.c_longlong]
+        libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+        address = libc.mmap(None, length, 1, 1, fd, 0)
+        self.assertNotEqual(address, ctypes.c_void_p(-1).value)
+        child = None
+        script = '''
+import contextlib, io, signal, sys
+from pathlib import Path
+from serve.shard_cache import ShardCache
+pin = ShardCache()
+with contextlib.redirect_stdout(io.StringIO()):
+    pin.pin(Path(sys.argv[1]), int(sys.argv[2]), 0)
+print('READY', flush=True)
+signal.pause()
+'''
+        def residency():
+            vector = (ctypes.c_ubyte * 2)()
+            self.assertEqual(libc.mincore(address, length, vector), 0)
+            return [v & 1 for v in vector]
+        try:
+            child = subprocess.Popen([sys.executable, '-c', script, str(self.path), str(length)],
+                                     cwd=Path(__file__).resolve().parents[1],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertTrue(select.select([child.stdout], [], [], 10)[0], 'test child did not become ready')
+            self.assertEqual(child.stdout.readline(), 'READY\n')
+            status = Path(f'/proc/{child.pid}/status').read_text()
+            locked = next(int(line.split()[1]) for line in status.splitlines() if line.startswith('VmLck:'))
+            self.assertEqual(locked * 1024, length)
+            os.posix_fadvise(fd, 0, length, os.POSIX_FADV_DONTNEED)
+            self.assertEqual(residency(), [1, 1])
+            child.kill()
+            child.wait(timeout=5)
+            os.posix_fadvise(fd, 0, length, os.POSIX_FADV_DONTNEED)
+            self.assertEqual(residency(), [0, 0])  # no stale pin from the dead owner
+            with cache.ShardCache() as replacement:
+                replacement.pin(self.path, length, 0)
+                self.assertEqual(replacement.length, length)
+                self.assertEqual(residency(), [1, 1])
+        finally:
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                child.communicate(timeout=5)
+            libc.munmap(address, length)
+            os.close(fd)
 
     def test_auto_pins_only_selected_file_and_enforces_eight_gib_headroom(self):
         with cache.ShardCache() as pin, mock.patch.object(pin, 'pin') as lock:

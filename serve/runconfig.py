@@ -36,7 +36,7 @@ EDITABLE = [
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
     ("shard_cache_gib", "cache_budget", "Keep part of a model in RAM for quicker reloads; particularly useful "
      "with spare RAM and limited VRAM. Linux only. GiB budget or auto for one whole shard; 0 disables it."),
-    ("shard_cache_shard", "int>=0", "One GGUF shard: 1 is first, 3 is third (empty: 3, or last available if fewer; 0 is invalid)"),
+    ("shard_cache_shard", "int>=0", "GGUF shard to cache (default: last shard)"),
     ("shard_cache_hot_unload", "bool", "Fill the shard cache on normal model unload, release its pin after the "
      "next arena load (off or empty: fill at startup and retain until server exit). Unload waits for the fill."),
     ("shard_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the shard cache (default/minimum: 8 GiB; "

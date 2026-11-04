@@ -11,7 +11,6 @@ import threading
 
 GIB = 1 << 30
 LOCK_CHUNK = 256 << 20
-DEFAULT_SHARD = 3  # Qwen3.8 Flash Next UD-IQ4_XS: third shard, or last available for smaller layouts
 MIN_HEADROOM_GIB = 8
 
 
@@ -56,7 +55,7 @@ def selected_file(cfg, args, shard):
         raise ValueError("shard cache supports GGUF files only")
     match = re.fullmatch(r"(.*)-(\d{5})(-[oO][fF]-)(\d{5})", path.stem)
     count = int(match[4]) if match else 1
-    number = min(DEFAULT_SHARD, count) if shard is None else shard
+    number = count if shard is None else shard
     if not 1 <= number <= count:
         raise ValueError(f"shard_cache_shard: model has {count} shard(s), requested {number}")
     if match:

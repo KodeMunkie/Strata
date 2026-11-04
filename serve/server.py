@@ -9520,7 +9520,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, cach
     ap.add_argument("--shard-cache-gib", type=shard_cache.budget_arg, default=None, metavar="N|auto",
                     help="Linux: pin N GiB or auto for the entire selected shard (0: off; keep at least 8 GiB for the OS)")
     ap.add_argument("--shard-cache-shard", type=int, default=None,
-                    help="model shard number to pin, matching its filename (1-based; default: 3, or last available if fewer)")
+                    help="GGUF shard to cache (default: last shard)")
     ap.add_argument("--shard-cache-headroom-gib", type=int, default=None,
                     help="Linux: available RAM to leave while filling the shard cache (default/minimum 8 GiB)")
     ap.add_argument("--shard-cache-hot-unload", action=argparse.BooleanOptionalAction, default=None,

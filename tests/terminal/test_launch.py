@@ -293,6 +293,9 @@ class RunConfig(unittest.TestCase):
     def test_shard_cache_controls_are_server_owned_and_default_off(self):
         cfg = derive_config(self.BASE, S.LaunchSettings(), bool_flags=frozenset())
         self.assertFalse(any(k.startswith('shard_cache_') for k in cfg))
+        cfg = derive_config(self.BASE, S.LaunchSettings(extra={'--shard-cache-gib': '32'}),
+                            bool_flags=frozenset())
+        self.assertNotIn('shard_cache_shard', cfg)  # resolve the last shard against the selected model
         s = S.LaunchSettings(extra={'--shard-cache-gib': '32', '--shard-cache-shard': '3',
                                     '--shard-cache-headroom-gib': '6', '--shard-cache-hot-unload': 'on'})
         cfg = derive_config(self.BASE, s, bool_flags=frozenset())
@@ -914,7 +917,7 @@ class FlagsCommand(unittest.TestCase):
             self.assertIn(flag, out)
         self.assertNotIn('--model-file-cache', out)
         self.assertNotIn('--hot-unload', out)
-        for args in (['--hot-unload'], ['--model-file-cache-gib', '32'], ['--set', 'hot-unload=on'],
+        for args in (['--hot-unload'], ['--model-file-cache-gib', '32'],
                      ['--set', 'model-file-cache-gib=32']):
             with self.subTest(args=args):
                 code, out, err = run_cli(['launch', '--plan', *args])

@@ -66,8 +66,8 @@ SHARD_CACHE_OPTIONS = (
     ("shard_cache_gib", 0, "Shard cache (GiB)",
      "Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. "
      "Linux only. GiB budget or auto for one whole shard; 0 disables it."),
-    ("shard_cache_shard", 3, "Shard cache shard",
-     "One GGUF shard matching its filename: 1 is first, 3 is third. Default 3, or the last available if fewer. 0 is invalid."),
+    ("shard_cache_shard", None, "Shard cache shard",
+     "GGUF shard to cache (default: last shard)."),
     ("shard_cache_headroom_gib", 8, "Shard cache RAM headroom (GiB)",
      "Available RAM to leave while filling the cache, with an enforced minimum of 8 GiB; also allow RAM for the arena."),
     ("shard_cache_hot_unload", False, "Shard cache hot unload",
@@ -81,8 +81,6 @@ def shard_cache_overrides(extra: dict) -> dict:
     for flag in extra:
         if flag.startswith('--model-file-cache-'):
             raise ValueError(f"{flag} was renamed to {flag.replace('--model-file-cache-', '--shard-cache-', 1)}")
-        if flag in ('--hot-unload', '--no-hot-unload'):
-            raise ValueError('Use --shard-cache-hot-unload or --no-shard-cache-hot-unload')
     out = {}
     for flag, key in SHARD_CACHE_FLAGS.items():
         if flag not in extra or extra[flag] == "":
@@ -321,8 +319,6 @@ def split_setting(text: str) -> tuple[str, str]:
         return key, value.strip()
     flag = key[2:] if key.startswith("--") else key
     flag = flag.replace("_", "-")
-    if flag == "hot-unload":
-        raise ValueError("Use shard-cache-hot-unload=on or shard-cache-hot-unload=off")
     if not _FLAG_NAME.match(flag):
         raise ValueError(f"'{text}' is not a setting name. Write it like prefill=65536 or STRATA_PIN_BY_NEED=1.")
     return "--" + flag, value.strip()

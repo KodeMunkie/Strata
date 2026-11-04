@@ -77,6 +77,21 @@ class Configuration(unittest.TestCase):
             self.assertEqual(cache.selected_file(cfg, ['--model', 'two-00001-of-00002.gguf'], None),
                              root / 'two-00002-of-00002.gguf')
 
+    def test_default_selects_last_shard_for_any_shard_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for count in (1, 2, 3, 5):
+                first = root / f'Model-00001-of-{count:05d}.gguf'
+                last = root / f'Model-{count:05d}-of-{count:05d}.gguf'
+                first.write_bytes(b'first')
+                last.write_bytes(b'last')
+                with self.subTest(count=count):
+                    self.assertEqual(cache.selected_file({}, ['--native', str(first)], None), last)
+                    self.assertEqual(cache.selected_file({}, ['--native', str(last)], 1), first)
+            third = root / 'Model-00003-of-00005.gguf'
+            third.write_bytes(b'third')
+            self.assertEqual(cache.selected_file({}, ['--native', str(last)], 3), third)
+
     def test_shard_selection_preserves_filename_and_extension_case(self):
         for suffix in ('.gguf', '.GGUF', '.GgUf'):
             with tempfile.TemporaryDirectory() as tmp:

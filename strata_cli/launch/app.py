@@ -181,7 +181,8 @@ class Ctx:
             value = (cfg or {}).get(key, default)
             metavar = "on|off" if isinstance(default, bool) else "N|auto" if key == "shard_cache_gib" else "N"
             switches.append(P.Param(name="--" + key.replace("_", "-"), kind="flag", metavar=metavar,
-                                    help_default=("on" if value else "off") if isinstance(default, bool) else str(value),
+                                    help_default=("on" if value else "off") if isinstance(default, bool) else
+                                                 (str(value) if value is not None else ""),
                                     values=["on", "off"] if isinstance(default, bool) else [],
                                     description=label, full=description))
         self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra, switches)

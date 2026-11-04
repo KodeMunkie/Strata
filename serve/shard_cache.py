@@ -54,13 +54,13 @@ def selected_file(cfg, args, shard):
         path = Path(cfg.get("cwd") or ".") / path
     if path.suffix.lower() != ".gguf":
         raise ValueError("shard cache supports GGUF files only")
-    match = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})\.gguf", path.name)
+    match = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})", path.stem)
     count = int(match[3]) if match else 1
     number = min(DEFAULT_SHARD, count) if shard is None else shard
     if not 1 <= number <= count:
         raise ValueError(f"shard_cache_shard: model has {count} shard(s), requested {number}")
     if match:
-        path = path.with_name(f"{match[1]}-{number:05d}-of-{count:05d}.gguf")
+        path = path.with_name(f"{match[1]}-{number:05d}-of-{count:05d}{path.suffix}")
     return path.resolve(strict=True)
 
 
@@ -68,13 +68,29 @@ def available_bytes():
     with open('/proc/meminfo') as stream:
         available = next(int(s.split()[1]) * 1024 for s in stream if s.startswith('MemAvailable:'))
     # A container's allowance can be smaller than the host's MemAvailable.
+    root = Path('/sys/fs/cgroup')
     try:
-        root = Path('/sys/fs/cgroup')
         limit = (root / 'memory.max').read_text().strip()
-        if limit != 'max':
-            available = min(available, max(0, int(limit) - int((root / 'memory.current').read_text())))
-    except (OSError, ValueError):
-        pass
+    except FileNotFoundError:
+        try:
+            groups = Path('/proc/self/cgroup').read_text().splitlines()
+        except OSError as exc:
+            raise ValueError('cannot verify the cgroup memory allowance; skipping shard cache') from exc
+        if any(len(fields := line.split(':', 2)) == 3 and 'memory' in fields[1].split(',')
+               for line in groups):
+            raise ValueError('cgroup-v1 memory accounting is unsupported; skipping shard cache '
+                             'instead of using host MemAvailable')
+        return available
+    except OSError as exc:
+        raise ValueError('cannot read the cgroup-v2 memory limit; skipping shard cache') from exc
+    if limit != 'max':
+        try:
+            limit, current = int(limit), int((root / 'memory.current').read_text())
+            if limit < 0 or current < 0:
+                raise ValueError('negative cgroup memory value')
+        except (OSError, ValueError) as exc:
+            raise ValueError('cannot verify the cgroup-v2 memory allowance; skipping shard cache') from exc
+        available = min(available, max(0, limit - current))
     return available
 
 

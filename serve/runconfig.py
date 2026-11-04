@@ -105,7 +105,7 @@ def check(key: str, v, cfg: dict):
     if key.startswith("shard_cache_"):
         from serve.shard_cache import settings
         settings({key: v})
-        if key == "shard_cache_gib" and v and not sys.platform.startswith("linux"):
+        if not sys.platform.startswith("linux"):
             raise ValueError("The shard cache is Linux-only; macOS and Windows are not supported")
         return v
     kind = SPEC[key]

@@ -569,7 +569,8 @@ GGUF filenames named by `--native` or `--model`: `1` selects `00001`, `3` select
 When the shard setting is absent, the default is **3**, matching the original Qwen3.8 Flash Next UD-IQ4_XS's
 three-shard layout; models with fewer shards use their last available shard.
 An unsharded model therefore uses its only file, shard **1**. An explicit shard must exist; it is never silently
-replaced by another number. The server pins **one file's prefix**, up to the budget or file size, whichever is
+replaced by another number. GGUF suffix matching is case-insensitive, and shard selection preserves the original
+filename and suffix case. The server pins **one file's prefix**, up to the budget or file size, whichever is
 smaller; it does not spread the remaining budget to other shards. A different model uses its own filenames
 automatically. Whether a chosen prefix contains weights the loader uses depends on that model's file layout.
 
@@ -584,6 +585,7 @@ memory-lock allowance. The model still loads or unloads normally.
 
 **Linux only.** macOS and Windows are not supported by this implementation. Although macOS has `mlock`, the
 memory-headroom checks here use Linux interfaces; no Mac performance or compatibility claim is made.
+The mock engine ignores an enabled shard cache and prints a startup notice; it does not pin a model file.
 
 The budget is configurable: **32 GiB is the size used in the example and tests, not a fixed cache size**.
 For example, with the three-shard **huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF, UD-IQ4_XS** model
@@ -630,8 +632,11 @@ It never raises privileges or changes the system limit. The headroom is a fill-t
 engine's later allocations. The default and enforced minimum headroom is **8 GiB**; smaller configured values
 still leave 8 GiB, while larger values are honored. This cache is **additional** to the engine's RAM arena during
 loading: allow space for both. Linux
-host memory and the current cgroup-v2 memory allowance are checked before filling. Stopping the server always
-unlocks the pages; it does not evict them from the ordinary page cache.
+host memory and the current cgroup-v2 memory allowance are checked before filling. Cgroup-v1 memory accounting
+is unsupported: when a v1 memory controller is detected, pinning is skipped with a warning rather than falling
+back to host RAM figures. Unreadable or invalid cgroup accounting also skips pinning with a warning. Model
+startup and unload continue without the cache. Stopping the server always unlocks the pages; it does not evict
+them from the ordinary page cache.
 
 Buffered reads and file mappings can use these pages. `O_DIRECT` reads bypass them. No speedup is established by
 enabling the setting: compare startup times and physical disk reads on the same model and hardware. The initial

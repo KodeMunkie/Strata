@@ -77,6 +77,21 @@ class Configuration(unittest.TestCase):
             self.assertEqual(cache.selected_file(cfg, ['--model', 'two-00001-of-00002.gguf'], None),
                              root / 'two-00002-of-00002.gguf')
 
+    def test_shard_selection_preserves_filename_and_extension_case(self):
+        for suffix in ('.gguf', '.GGUF', '.GgUf'):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                first = root / f'MixedCase-Model-00001-of-00003{suffix}'
+                third = root / f'MixedCase-Model-00003-of-00003{suffix}'
+                first.write_bytes(b'first')
+                third.write_bytes(b'third')
+                args = ['--native', first.name]
+                for shard, expected in ((None, third), (1, first), (3, third)):
+                    with self.subTest(suffix=suffix, shard=shard):
+                        self.assertEqual(cache.selected_file({'cwd': tmp}, args, shard), expected)
+                with self.subTest(suffix=suffix, shard=4), self.assertRaisesRegex(ValueError, 'has 3 shard'):
+                    cache.selected_file({'cwd': tmp}, args, 4)
+
     def test_non_linux_refuses_enabled_feature(self):
         with mock.patch.object(cache.sys, 'platform', 'win32'), self.assertRaisesRegex(ValueError, 'Linux'):
             cache.ShardCache().start({'shard_cache_gib': 1}, [])
@@ -107,10 +122,61 @@ class Configuration(unittest.TestCase):
         self.assertTrue(fields['shard_cache_hot_unload']['linux_only'])
         self.assertEqual(fields['shard_cache_gib']['step'], 1)
         self.assertEqual(fields['shard_cache_gib']['kind'], 'cache_budget')
-        with mock.patch.object(runconfig.sys, 'platform', 'darwin'):
-            self.assertEqual(runconfig.view({}, 'model.json')['platform'], 'darwin')
-            with self.assertRaisesRegex(ValueError, 'Linux'):
-                runconfig.apply({}, {'shard_cache_gib': 32})
+        for platform in ('darwin', 'win32'):
+            with mock.patch.object(runconfig.sys, 'platform', platform):
+                self.assertEqual(runconfig.view({}, 'model.json')['platform'], platform)
+                for key, value in (('shard_cache_gib', 'auto'), ('shard_cache_shard', 3),
+                                   ('shard_cache_headroom_gib', 8), ('shard_cache_hot_unload', True)):
+                    with self.subTest(platform=platform, key=key), self.assertRaisesRegex(ValueError, 'Linux'):
+                        runconfig.apply({}, {key: value})
+                    cfg, _ = runconfig.apply({key: value}, {key: None})
+                    self.assertNotIn(key, cfg)  # clearing unsupported settings remains possible
+
+    def test_mock_engine_reports_ignored_budget_before_startup(self):
+        from serve import server
+        for budget in ('0', 'auto'):
+            output = io.StringIO()
+            with mock.patch('strata_control.private_files.adopt_user_defaults'), \
+                    mock.patch.object(server.lifeline, 'install_stop_handlers'), \
+                    mock.patch.object(server, 'split_joined_args', side_effect=RuntimeError('stop before startup')), \
+                    mock.patch.object(cache.ShardCache, 'configure') as configure, \
+                    contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, 'stop before startup'):
+                server.main(['--engine', 'mock', '--shard-cache-gib', budget])
+            self.assertEqual('shard cache is ignored by --engine mock' in output.getvalue(), budget == 'auto')
+            configure.assert_not_called()
+
+
+class MemoryAllowance(unittest.TestCase):
+    def available(self, files):
+        def read(path, *args, **kwargs):
+            value = files.get(str(path), FileNotFoundError(str(path)))
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with mock.patch('builtins.open', mock.mock_open(read_data='MemAvailable: 67108864 kB\n')), \
+                mock.patch.object(Path, 'read_text', autospec=True, side_effect=read):
+            return cache.available_bytes()
+
+    def test_v2_limit_caps_host_memory(self):
+        self.assertEqual(self.available({'/sys/fs/cgroup/memory.max': str(48 * cache.GIB),
+                                         '/sys/fs/cgroup/memory.current': str(16 * cache.GIB)}), 32 * cache.GIB)
+
+    def test_unlimited_v2_or_no_memory_controller_uses_host_available(self):
+        self.assertEqual(self.available({'/sys/fs/cgroup/memory.max': 'max'}), 64 * cache.GIB)
+        self.assertEqual(self.available({'/proc/self/cgroup': '0::/\n'}), 64 * cache.GIB)
+
+    def test_v1_memory_controller_is_explicitly_unsupported(self):
+        with self.assertRaisesRegex(ValueError, 'cgroup-v1.*unsupported'):
+            self.available({'/proc/self/cgroup': '5:cpu,cpuacct:/\n4:memory:/limited\n'})
+
+    def test_unreadable_or_invalid_cgroup_allowance_does_not_fall_back(self):
+        for files in ({'/sys/fs/cgroup/memory.max': PermissionError('denied')},
+                      {'/sys/fs/cgroup/memory.max': str(32 * cache.GIB)},
+                      {'/sys/fs/cgroup/memory.max': 'invalid'},
+                      {'/sys/fs/cgroup/memory.max': '-1', '/sys/fs/cgroup/memory.current': '0'},
+                      {'/proc/self/cgroup': PermissionError('denied')}):
+            with self.subTest(files=files), self.assertRaisesRegex(ValueError, 'cgroup'):
+                self.available(files)
 
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux mlock')
@@ -179,8 +245,9 @@ class LinuxPin(unittest.TestCase):
         script = '''
 import contextlib, io, signal, sys
 from pathlib import Path
-from serve.shard_cache import ShardCache
-pin = ShardCache()
+from serve import shard_cache
+shard_cache.available_bytes = lambda: 1 << 30  # isolate this two-page ownership test from live accounting
+pin = shard_cache.ShardCache()
 with contextlib.redirect_stdout(io.StringIO()):
     pin.pin(Path(sys.argv[1]), int(sys.argv[2]), 0)
 print('READY', flush=True)

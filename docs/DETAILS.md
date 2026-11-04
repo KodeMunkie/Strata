@@ -554,22 +554,22 @@ Set these keys outside `args` in the run config, or edit them in the web page's 
 "shard_cache_hot_unload": false
 ```
 
-Numeric settings use units of 1,073,741,824 bytes: `32` is about 34.36 GB and `8` is about 8.59 GB. Zero or an
-absent budget disables the feature. Shard numbers match the GGUF filenames named by `--native` or `--model`:
-`1` selects `00001`, `3` selects `00003`; shard `0` is invalid. When the shard setting is absent, the default
-is the **last shard**. An unsharded model therefore uses its only file, shard **1**. An explicit shard must
-exist; it is never silently replaced by another number. GGUF suffixes and the `-of-` separator are matched
-case-insensitively. Shard selection preserves the original model-name prefix, separator and suffix case. The
-server pins **one file's prefix**, up to the budget or file size, whichever is smaller; it does not spread the
-remaining budget to other shards. A different model uses its own filenames automatically. Whether a chosen
-prefix contains weights the loader uses depends on that model's file layout.
+Numeric budgets and headroom are in GiB. Zero or an absent budget disables the feature. Shard numbers match
+the GGUF filenames named by `--native` or `--model`: `1` selects `00001`, `3` selects `00003`; shard `0` is
+invalid. When the shard setting is absent, the default is the **last shard**. An unsharded model therefore
+uses its only file, shard **1**. An explicit shard must exist; it is never silently replaced by another
+number. GGUF suffixes and the `-of-` separator are matched case-insensitively. Shard selection preserves the
+original model-name prefix, separator and suffix case. The server pins **one file's prefix**, up to the budget
+or file size, whichever is smaller; it does not spread the remaining budget to other shards. A different model
+uses its own filenames automatically. Whether a chosen prefix contains weights the loader uses depends on that
+model's file layout.
 
 Set `"shard_cache_gib": "auto"` or `--shard-cache-gib auto` to use the selected shard's **entire file size**,
 rather than a fixed memory budget. This includes only that one shard. For the three-shard example below,
 `--shard-cache-gib auto --shard-cache-shard 3` requests all of shard 3. Auto does not shrink the request
 silently: if the whole shard cannot be pinned, a warning suggests an explicit numeric budget based on the
 current available RAM and memory-lock allowance. No partial pin is kept on failure. The suggestion leaves at
-least **8.59 GB available to the OS**, or a larger configured headroom, and is an estimate at fill time. If no
+least **8 GiB available to the OS**, or a larger configured headroom, and is an estimate at fill time. If no
 positive whole-number budget fits, the warning suggests disabling the cache or freeing RAM/raising the
 memory-lock allowance. The model still loads or unloads normally.
 
@@ -581,8 +581,8 @@ feature on those platforms; clearing saved settings is allowed. The mock engine 
 and prints a startup notice; it neither pins model files nor validates the selected shard. On Linux, the real
 Strata engine validates the file and shard when configuring its enabled cache.
 
-The budget is configurable: **34.36 GB is the size used in the example and tests, not a fixed cache size**.
-For example, with a three-shard GGUF model already on disk (replace the placeholder path with your own):
+The budget is configurable: **32 GiB is the size used in the example and tests, not a fixed cache size**. For
+example, with a three-shard GGUF model already on disk (replace the placeholder path with your own):
 
 ```sh
 strata launch --model-path /models/example-model/Example-Model-00001-of-00003.gguf \
@@ -611,20 +611,19 @@ shard/prefix cache-fill pass, which may need another storage read if the OS has 
 **Measured example (4 November 2026): two SATA SSDs in RAID 0, Linux.** Tested with
 **huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF (UD-IQ4_XS)**, split across three GGUF shards
 totalling 93.68 GB, a 196608-token context, and RTX 5070 + two RTX 5060 Ti GPUs. Five actual engine
-unload/reload cycles ran with the pin off, followed by five with a **configurable 34.36 GB budget on shard
-3**. Before each reload, only the SATA GGUF files received `POSIX_FADV_DONTNEED`; the locked pages stayed
-resident. No global cache drop was used. The initial server start and pin fill are excluded from the timed
-reloads.
+unload/reload cycles ran with the pin off, followed by five with a **configurable 32 GiB budget on shard 3**.
+Before each reload, only the SATA GGUF files received `POSIX_FADV_DONTNEED`; the locked pages stayed resident.
+No global cache drop was used. The initial server start and pin fill are excluded from the timed reloads.
 
-| Measurement | Cache off | 34.36 GB on shard 3 |
+| Measurement | Cache off | 32 GiB on shard 3 |
 | --- | --- | --- |
 | Five load times, seconds | 175.9, 175.2, 174.3, 175.0, 174.2 | 121.0, 119.6, 142.6, 145.9, 175.8 |
 | Mean load time | 174.9 s | 141.0 s |
 | Mean physical RAID reads | 92.9 GB | 59.4 GB |
-| Expert-arena loading rate | 0.78 GB/s in all five runs | 1.55, 1.58, 1.56, 1.57, 1.06 GB/s |
+| Expert-arena loading rate | 0.73 GiB/s in all five runs | 1.44, 1.47, 1.45, 1.46, 0.99 GiB/s |
 
 In this series, the pin reduced average reload time by 19% and RAID reads by 36%. Four effective arena-loading
-rates reached 1.55–1.58 GB/s, comparable to one earlier NVMe-backed observation of 1.57 GB/s. That rate
+rates reached 1.44–1.47 GiB/s, comparable to one earlier NVMe-backed observation of 1.46 GiB/s. That rate
 combines RAM and disk reads; it is not the physical speed of the SATA drives or a matched NVMe/SATA startup
 comparison. The last cached run was as slow as the baseline, so the improvement is not guaranteed for every
 reload. The prepared pack, MTP and projector remained on NVMe (about 3–3.6 GB of ancillary NVMe reads per

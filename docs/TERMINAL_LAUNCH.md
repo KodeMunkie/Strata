@@ -96,10 +96,10 @@ strata launch --show-key
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; DeepSeek: one at a time. |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
 | `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If it cannot run, MTP is used and the start says why. |
-| `--shard-cache-gib N\|auto` | Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. Linux only. A budget in units of 1,073,741,824 bytes (32 is about 34.36 GB) or `auto` for the whole selected shard; default 0 (off). Failed fills warn and suggest a budget leaving at least 8.59 GB for the OS. |
+| `--shard-cache-gib N\|auto` | Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. Linux only. A GiB budget or `auto` for the whole selected shard; default 0 (off). Failed fills warn and suggest a budget leaving at least 8 GiB for the OS. |
 | `--shard-cache-hot-unload` / `--no-shard-cache-hot-unload` | Fill an enabled shard cache after each model unload, then release its pin after the next arena load reaches READY. Unload waits for the fill. Default off: fill at server startup and retain until exit. |
 | `--shard-cache-shard N` | GGUF shard to cache. Default: last shard. |
-| `--shard-cache-headroom-gib N` | Available RAM to leave while filling the cache, in units of 1,073,741,824 bytes; default and minimum 8 (about 8.59 GB). Larger values are honored. Allow additional RAM for the model arena. |
+| `--shard-cache-headroom-gib N` | Available RAM to leave while filling the cache; default and minimum 8 GiB. Larger values are honored. Allow additional RAM for the model arena. |
 | `--gpu LIST`, `--gpu-roles LIST` | Which cards to use, and a role per card. |
 | `--tune quick\|thorough\|skip`, `--tune-allow-small`, `--retune` | Tuning. `--retune` measures again; a model tuned before for the same choices on this computer reuses the stored result. |
 | `--set KEY=VALUE` | An advanced engine setting or `STRATA_*` variable (repeatable). Unknown names get a warning. |

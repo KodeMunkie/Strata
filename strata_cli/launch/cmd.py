@@ -98,13 +98,11 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
                         "'on' picks the reader by your graphics memory: the CPU reader under 24 GB, the GPU reader from 24 GB (any make); "
                         "gpu / cpu choose one; off turns pictures off")
     g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
-    for key, default, label, description in S.FILE_CACHE_OPTIONS:
+    for key, default, label, description in S.SHARD_CACHE_OPTIONS:
         kind = {"action": argparse.BooleanOptionalAction} if isinstance(default, bool) else {"type": int, "metavar": "N"}
-        if key == "model_file_cache_gib":
+        if key == "shard_cache_gib":
             kind = {"type": str, "metavar": "N|auto"}
         flags = ["--" + key.replace("_", "-")]
-        if key == "model_file_cache_hot_unload":
-            flags.append("--hot-unload")
         g.add_argument(*flags, default=None, **kind,
                        help=f"{label}: {description} Default: {default}. Saved with the preset.")
     g.add_argument("--mtp", type=_choice("a draft layer setting", S.MTP_MODES), metavar="on|off",
@@ -301,10 +299,10 @@ def settings_from_args(a: argparse.Namespace, catalog=None) -> tuple[S.LaunchSet
         s.no_key = False
     if a.set:
         s.extra = {**s.extra, **S.settings_from_pairs(a.set)}
-    for flag, key in S.FILE_CACHE_FLAGS.items():
+    for flag, key in S.SHARD_CACHE_FLAGS.items():
         if getattr(a, key, None) is not None:
             s.extra[flag] = str(getattr(a, key))
-    S.file_cache_overrides(s.extra)                # validate before a launch downloads or writes anything
+    S.shard_cache_overrides(s.extra)                # validate before a launch downloads or writes anything
     if a.dspark:
         s.extra = {**s.extra, "--dspark": a.dspark}
         if a.dspark == "on" and sys.platform == "darwin":
@@ -890,7 +888,7 @@ def run_launch(a: argparse.Namespace) -> int:
         if not machine:
             _interrupted_move_notice()
         have_choices = bool(a.preset or a.model or a.model_path or a.context or a.vision or a.parallel or a.access or a.tune or a.drafting or getattr(a, "split_engine", None) or getattr(a, "speed", None) or getattr(a, "full_quality", False)
-                            or any(getattr(a, key, None) is not None for key in S.FILE_CACHE_FLAGS.values()))
+                            or any(getattr(a, key, None) is not None for key in S.SHARD_CACHE_FLAGS.values()))
         interactive = sys.stdin.isatty() and sys.stdout.isatty() and not a.no_tui and not machine and not a.plan
         plain_questions = False
         no_screens_package = None

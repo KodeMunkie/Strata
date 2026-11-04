@@ -96,10 +96,10 @@ strata launch --show-key
 | `--parallel N` | Requests answered at the same time, 1 to 8. Default: fit to your card; DeepSeek: one at a time. |
 | `--mtp on\|off` | The draft layer. `off` saves about 1 GB of graphics memory and is slower. Default: on. |
 | `--drafting auto\|mtp\|dflash2\|off` | Which drafter guesses ahead. `dflash2` is for Qwen3.8-Flash-Next only and downloads a 1.2 GB drafter once. If it cannot run, MTP is used and the start says why. |
-| `--model-file-cache-gib N\|auto` | Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. Linux only. A GiB budget or `auto` for the whole selected shard; default 0 (off). Failed fills warn and suggest a budget leaving at least 8 GiB for the OS. |
-| `--hot-unload` / `--no-hot-unload` | Fill an enabled file cache after each model unload, then release its pin after the next arena load reaches READY. Unload waits for the fill. Default off: fill at server startup and retain until exit. Also accepts `--model-file-cache-hot-unload` / `--no-model-file-cache-hot-unload`. |
-| `--model-file-cache-shard N` | Cache exactly one numbered shard: 1 is first, 3 is third; 0 is invalid. Default: 3 (Qwen UD-IQ4_XS), or the last available if fewer; a single-file model uses file 1. Explicit choices must exist. |
-| `--model-file-cache-headroom-gib N` | Available RAM to leave while filling the cache; default and minimum 8 GiB. Larger values are honored. Allow additional RAM for the model arena. |
+| `--shard-cache-gib N\|auto` | Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. Linux only. A GiB budget or `auto` for the whole selected shard; default 0 (off). Failed fills warn and suggest a budget leaving at least 8 GiB for the OS. |
+| `--shard-cache-hot-unload` / `--no-shard-cache-hot-unload` | Fill an enabled shard cache after each model unload, then release its pin after the next arena load reaches READY. Unload waits for the fill. Default off: fill at server startup and retain until exit. |
+| `--shard-cache-shard N` | Cache exactly one numbered shard: 1 is first, 3 is third; 0 is invalid. Default: 3 (Qwen UD-IQ4_XS), or the last available if fewer; a single-file model uses file 1. Explicit choices must exist. |
+| `--shard-cache-headroom-gib N` | Available RAM to leave while filling the cache; default and minimum 8 GiB. Larger values are honored. Allow additional RAM for the model arena. |
 | `--gpu LIST`, `--gpu-roles LIST` | Which cards to use, and a role per card. |
 | `--tune quick\|thorough\|skip`, `--tune-allow-small`, `--retune` | Tuning. `--retune` measures again; a model tuned before for the same choices on this computer reuses the stored result. |
 | `--set KEY=VALUE` | An advanced engine setting or `STRATA_*` variable (repeatable). Unknown names get a warning. |

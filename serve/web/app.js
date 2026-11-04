@@ -663,8 +663,8 @@ async function loadConfig() {
         `${k.linux_only && c.platform !== 'linux' ? 'disabled title="Linux only; macOS and Windows are not supported"' : ''} ` +
         `value="${esc(text)}" placeholder="${k.kind === 'cache_budget' ? '0 (off), GiB, or auto (whole shard)' : 'default'}" autocomplete="off">`;
     }
-    const note = k.key === "model_file_cache_gib"
-      ? `<p class="muted small" style="grid-column:1/-1">${esc(k.help)} Normally retained from startup until server exit. Hot-unload fills after releasing the arena/GPU and releases its pin after the next arena load. Keeps at least 8 GiB for the OS. Allocation failures warn and suggest a budget. Restart the server after changes.</p>` : '';
+    const note = k.key === "shard_cache_gib"
+      ? `<p class="muted small" style="grid-column:1/-1">${esc(k.help)} Normally retained from startup until server exit. Shard cache hot unload fills after releasing the arena/GPU and releases its pin after the next arena load. Keeps at least 8 GiB for the OS. Allocation failures warn and suggest a budget. Restart the server after changes.</p>` : '';
     return note + `<label for="${id}" title="${esc(k.help)}">${esc(k.label || k.help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
@@ -695,8 +695,8 @@ $("cfg-save").addEventListener("click", async () => {
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
       ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. ` +
-        (b.changed.some((k) => k.startsWith("model_file_cache_"))
-          ? "Restart the Strata server to apply new file-cache settings."
+        (b.changed.some((k) => k.startsWith("shard_cache_"))
+          ? "Restart the Strata server to apply new shard-cache settings."
           : "Start the model again to use it.") : "Nothing changed.";
     loadConfig();
   } catch (e) {

@@ -203,8 +203,8 @@ def build_rows(engine_help: str | None, base_args: list[Any], tuned_args: list[A
 
 def check_name(name: str, engine_flags: list[str] | None) -> str | None:
     """A warning (never a refusal) for a flag the engine's list does not have."""
-    from strata_cli.launch.settings import FILE_CACHE_FLAGS
-    if name in FILE_CACHE_FLAGS or not name.startswith("--") or not engine_flags:
+    from strata_cli.launch.settings import SHARD_CACHE_FLAGS
+    if name in SHARD_CACHE_FLAGS or not name.startswith("--") or not engine_flags:
         return None
     if name in engine_flags:
         return None

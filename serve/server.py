@@ -83,7 +83,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
-from serve import model_file_cache  # noqa: E402
+from serve import shard_cache  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -4575,7 +4575,7 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
-        self.model_file_cache = None                     # server-owned pin, retained across engine unloads
+        self.shard_cache = None                          # server-owned pin, retained across engine unloads
         self.min_free_vram_mib = 0
         self.before_load = None
         self.before_load_timeout_s = 120.0               # #1997: how long the before_load command may run
@@ -5073,8 +5073,8 @@ class Service:
             if isinstance(e, OSError):
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
-        if self.model_file_cache is not None:
-            self.model_file_cache.on_load()              # restart() returned only after READY / arena load
+        if self.shard_cache is not None:
+            self.shard_cache.on_load()                   # restart() returned only after READY / arena load
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
@@ -5188,8 +5188,8 @@ class Service:
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             self.vision_held = False
-            if self.model_file_cache is not None:
-                self.model_file_cache.on_unload()
+            if self.shard_cache is not None:
+                self.shard_cache.on_unload()
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
@@ -9489,13 +9489,13 @@ def tool_call_recovery_setting(cfg: dict) -> bool:
 
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
-    # The API server owns this mapping. Engine unload/restart must not release it.
-    with model_file_cache.ModelFileCache() as file_cache:
+    # The API server owns this mapping; shard-cache mode controls when the pin is released.
+    with shard_cache.ShardCache() as cache_pin:
         return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code,
-                     file_cache=file_cache)
+                     cache_pin=cache_pin)
 
 
-def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file_cache) -> int:
+def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, cache_pin) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
@@ -9517,13 +9517,13 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
-    ap.add_argument("--model-file-cache-gib", type=model_file_cache.budget_arg, default=None, metavar="N|auto",
+    ap.add_argument("--shard-cache-gib", type=shard_cache.budget_arg, default=None, metavar="N|auto",
                     help="Linux: pin N GiB or auto for the entire selected shard (0: off; keep at least 8 GiB for the OS)")
-    ap.add_argument("--model-file-cache-shard", type=int, default=None,
+    ap.add_argument("--shard-cache-shard", type=int, default=None,
                     help="model shard number to pin, matching its filename (1-based; default: 3, or last available if fewer)")
-    ap.add_argument("--model-file-cache-headroom-gib", type=int, default=None,
-                    help="Linux: available RAM to leave while filling the model file cache (default/minimum 8 GiB)")
-    ap.add_argument("--model-file-cache-hot-unload", "--hot-unload", action=argparse.BooleanOptionalAction, default=None,
+    ap.add_argument("--shard-cache-headroom-gib", type=int, default=None,
+                    help="Linux: available RAM to leave while filling the shard cache (default/minimum 8 GiB)")
+    ap.add_argument("--shard-cache-hot-unload", action=argparse.BooleanOptionalAction, default=None,
                     help="fill the cache on model unload, release it after the next arena load (default: off)")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
@@ -9629,12 +9629,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
-    for key in ("model_file_cache_gib", "model_file_cache_shard", "model_file_cache_headroom_gib",
-                "model_file_cache_hot_unload"):
+    for key in ("shard_cache_gib", "shard_cache_shard", "shard_cache_headroom_gib",
+                "shard_cache_hot_unload"):
         if getattr(a, key) is not None:
             cfg[key] = getattr(a, key)
     try:
-        model_file_cache.settings(cfg)
+        shard_cache.settings(cfg)
     except ValueError as exc:
         ap.error(str(exc))
     split_joined_args(cfg)
@@ -9751,11 +9751,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = apply_vision_defaults(with_component_engine(cfg))
-        if cfg.get("model_file_cache_gib"):
+        if cfg.get("shard_cache_gib"):
             try:
-                file_cache.configure(cfg, engine_args(cfg, announce=False))
+                cache_pin.configure(cfg, engine_args(cfg, announce=False))
             except (OSError, ValueError) as exc:
-                ap.error(f"model file cache: {exc}")
+                ap.error(f"shard cache: {exc}")
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.
@@ -9866,8 +9866,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
-    if a.engine == "strata" and cfg.get("model_file_cache_gib"):
-        svc.model_file_cache = file_cache
+    if a.engine == "strata" and cfg.get("shard_cache_gib"):
+        svc.shard_cache = cache_pin
     if (cfg.get("arch") or "") == "deepseek41" and vision is None and a.engine == "strata":
         # DeepSeek-V4.1 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
         # `--vision off` in the config's args, or a pack without a tower, leaves svc.vision None: pictures are refused with the 400 as before.

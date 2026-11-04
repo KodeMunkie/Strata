@@ -34,12 +34,12 @@ EDITABLE = [
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
-    ("model_file_cache_gib", "cache_budget", "Keep part of a model in RAM for quicker reloads; particularly useful "
+    ("shard_cache_gib", "cache_budget", "Keep part of a model in RAM for quicker reloads; particularly useful "
      "with spare RAM and limited VRAM. Linux only. GiB budget or auto for one whole shard; 0 disables it."),
-    ("model_file_cache_shard", "int>=0", "One GGUF shard: 1 is first, 3 is third (empty: 3, or last available if fewer; 0 is invalid)"),
-    ("model_file_cache_hot_unload", "bool", "Fill the file cache on normal model unload, release its pin after the "
+    ("shard_cache_shard", "int>=0", "One GGUF shard: 1 is first, 3 is third (empty: 3, or last available if fewer; 0 is invalid)"),
+    ("shard_cache_hot_unload", "bool", "Fill the shard cache on normal model unload, release its pin after the "
      "next arena load (off or empty: fill at startup and retain until server exit). Unload waits for the fill."),
-    ("model_file_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the file cache (default/minimum: 8 GiB; "
+    ("shard_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the shard cache (default/minimum: 8 GiB; "
      "does not include RAM the engine will allocate afterward)"),
     ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
                     "empty or on: as installed"),
@@ -78,11 +78,11 @@ def view(cfg: dict, path: str | Path) -> dict:
         k = kind[0] if isinstance(kind, tuple) else kind
         out.append({"key": key, "value": value_of(cfg, key), "help": help_,
                     "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0") else k,
-                    **({"label": {"model_file_cache_gib": "Model file RAM cache (GiB)",
-                                  "model_file_cache_shard": "Shard to cache (from 1)",
-                                  "model_file_cache_hot_unload": "Hot-unload (defer cache fill)",
-                                  "model_file_cache_headroom_gib": "RAM headroom while filling (GiB)"}[key],
-                        "step": 1, "linux_only": True} if key.startswith("model_file_cache_") else {}),
+                    **({"label": {"shard_cache_gib": "Shard cache (GiB)",
+                                  "shard_cache_shard": "Shard to cache (from 1)",
+                                  "shard_cache_hot_unload": "Shard cache hot unload",
+                                  "shard_cache_headroom_gib": "RAM headroom while filling (GiB)"}[key],
+                        "step": 1, "linux_only": True} if key.startswith("shard_cache_") else {}),
                     **({"choices": kind[1]} if k == "enum" else {})})
     return {"file": Path(path).name, "keys": out, "platform": sys.platform,
             "note": "Saved to the run config; used from the next start of the model."}
@@ -102,11 +102,11 @@ def check(key: str, v, cfg: dict):
         raise ValueError(f"{key!r} cannot be changed here (only the keys the Settings view lists)")
     if v is None:
         return None
-    if key.startswith("model_file_cache_"):
-        from serve.model_file_cache import settings
+    if key.startswith("shard_cache_"):
+        from serve.shard_cache import settings
         settings({key: v})
-        if key == "model_file_cache_gib" and v and not sys.platform.startswith("linux"):
-            raise ValueError("The model file RAM cache is Linux-only; macOS and Windows are not supported")
+        if key == "shard_cache_gib" and v and not sys.platform.startswith("linux"):
+            raise ValueError("The shard cache is Linux-only; macOS and Windows are not supported")
         return v
     kind = SPEC[key]
     k = kind[0] if isinstance(kind, tuple) else kind

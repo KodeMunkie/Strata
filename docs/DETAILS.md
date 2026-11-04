@@ -507,24 +507,31 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
 
-#### Keep part of a model file in RAM (Linux, off by default)
+#### Shard cache for faster model reloads (Linux, off by default)
 
-On a drive whose sustained reads slow down, an optional file-cache pin can keep part of a GGUF shard in RAM
+On a drive whose sustained reads slow down, an optional shard cache pin can keep part of a GGUF shard in RAM
 between engine unloads and reloads. The intent is quick model loading through partial in-memory storage of the
 model. It is particularly useful with spare system RAM and limited VRAM. Retaining one shard or a budgeted
 prefix is intended to use less RAM than retaining the full expert arena;
 the actual saving depends on the shard size, budget and model layout.
 
+The one-shard limit is deliberate: this is intended as a **partial model cache**, retaining some source bytes
+for faster model reloads while bounding its RAM cost. Users who want to retain more model data should keep the
+arena loaded instead of unloading it and caching more shards. The other required shards are still read normally.
+The cache can benefit whichever weights the loader reads from the selected range; it is not specific to expert
+weights. Experts can span multiple shards, and this feature neither selects individual tensors nor enlarges the
+GPU expert cache.
+
 It belongs to the **server**: with the cache enabled, the default fills it at server startup and keeps it pinned
 for the server's lifetime, including across `/unload` and idle unload. If lifetime pinning is undesirable, add
-`--hot-unload`: the cache fills only on a successful model unload, after the arena and GPU resources have been
-released, and its RAM pin is released when the arena is reloaded later. This is less desirable for repeated
+`--shard-cache-hot-unload`: the cache fills only on a successful model unload, after the arena and GPU resources
+have been released, and its RAM pin is released when the arena is reloaded later. This is less desirable for repeated
 unload/reload performance because it slows unloading and adds a cache-fill pass over the selected shard (or
 budgeted prefix) on each cycle, potentially reading those bytes from storage again. Pages still in the OS cache
 can be reused. It is not a tensor cache and needs no model-specific weight offsets.
 
 **Uses Linux's own filesystem caching and pinning facilities.** Enable it with Strata's
-`--model-file-cache-gib` setting, optionally adding `--hot-unload`. Strata's server then calls the Linux
+`--shard-cache-gib` setting, optionally adding `--shard-cache-hot-unload`. Strata's server then calls the Linux
 `mmap()` and `mlock()` system calls internally; these names describe its implementation, not additional
 command-line options the user needs to supply. A shared file mapping (`mmap()` with `MAP_SHARED`)
 accesses the existing Linux page cache, and `mlock()` keeps the selected pages resident. Linux manages the cached
@@ -544,10 +551,10 @@ little benefit when the ordinary cache already retains those bytes. See the Linu
 Set these keys outside `args` in the run config, or edit them in the web page's Model settings:
 
 ```json
-"model_file_cache_gib": 32,
-"model_file_cache_shard": 3,
-"model_file_cache_headroom_gib": 8,
-"model_file_cache_hot_unload": false
+"shard_cache_gib": 32,
+"shard_cache_shard": 3,
+"shard_cache_headroom_gib": 8,
+"shard_cache_hot_unload": false
 ```
 
 The budget is in GiB (1024 cubed bytes). Zero or an absent budget disables the feature. Shard numbers match the
@@ -559,9 +566,9 @@ replaced by another number. The server pins **one file's prefix**, up to the bud
 smaller; it does not spread the remaining budget to other shards. A different model uses its own filenames
 automatically. Whether a chosen prefix contains weights the loader uses depends on that model's file layout.
 
-Set `"model_file_cache_gib": "auto"` or `--model-file-cache-gib auto` to use the selected shard's **entire file
+Set `"shard_cache_gib": "auto"` or `--shard-cache-gib auto` to use the selected shard's **entire file
 size**, rather than a fixed GiB budget. This includes only that one shard. For the Huihui Qwen3.8 Flash Next
-UD-IQ4_XS example below, `--model-file-cache-gib auto --model-file-cache-shard 3` requests all of shard 3.
+UD-IQ4_XS example below, `--shard-cache-gib auto --shard-cache-shard 3` requests all of shard 3.
 Auto does not shrink the request silently: if the whole shard cannot be pinned, a warning suggests an explicit
 GiB budget based on the current available RAM and memory-lock allowance. No partial pin is kept on failure.
 The suggestion leaves at least **8 GiB available to the OS**, or a larger configured headroom, and is an estimate
@@ -577,26 +584,26 @@ already on disk:
 
 ```sh
 strata launch --model-path /models/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
-  --model-file-cache-gib 32 --model-file-cache-shard 3 --model-file-cache-headroom-gib 8
+  --shard-cache-gib 32 --shard-cache-shard 3 --shard-cache-headroom-gib 8
 ```
 
-In the **TUI**, open **Advanced**, filter for `model-file-cache`, and edit the budget, shard, headroom and hot-unload mode.
+In the **TUI**, open **Advanced**, filter for `shard-cache`, and edit the budget, shard, headroom and shard cache hot unload mode.
 Those choices are saved with the preset. `0` disables the budget; the default remains off. The same controls
 appear under **Model settings** in the server's **web UI** and are disabled on unsupported platforms.
 
-The equivalent server overrides are `--model-file-cache-gib 32 --model-file-cache-shard 3
---model-file-cache-headroom-gib 8`. Settings changes take
+The equivalent server overrides are `--shard-cache-gib 32 --shard-cache-shard 3
+--shard-cache-headroom-gib 8`. Settings changes take
 effect after a **server restart**, not `/unload` followed by `/load`. The pin fills before starting the engine,
 including lazy starts. A failed allocation or memory lock releases all partial pins, logs a **warning**, and
 continues without the cache. It does not prevent model startup or unloading. Invalid settings and nonexistent
 shard choices are still configuration errors.
 
-**Optional hot-unload:** set `"model_file_cache_hot_unload": true` or add `--hot-unload`
+**Optional shard cache hot unload:** set `"shard_cache_hot_unload": true` or add `--shard-cache-hot-unload`
 to the launch command above for the same Huihui Qwen3.8 Flash Next UD-IQ4_XS model. This flag is **off by default**.
 It is for users who prefer to release the permanent file-cache pin while the model is loaded: it keeps some
 model data **hot despite unloading** the full arena and GPU resources, with the intent of using less RAM while
 the model is unloaded and making its next load quicker.
-Lifetime pinning avoids repeated fills and is the preferred mode for repeated reloads. Hot-unload trades that
+Lifetime pinning avoids repeated fills and is the preferred mode for repeated reloads. Shard cache hot unload trades that
 for releasing the pin while the model is loaded: each unload waits for an extra shard/prefix cache-fill pass,
 which may need another storage read if the OS has evicted those pages.
 With a nonzero cache budget, it skips the startup fill. Each successful normal model unload (`/unload`, the
@@ -608,8 +615,7 @@ Linux may retain them in its ordinary page cache until another allocation needs 
 the pin. A failed model load keeps the pin for the next attempt.
 Stopping the Strata server never triggers a fill and always releases the pin. If a deferred fill fails, all partial
 locks are released, the model stays unloaded, and the failure is logged; a later load/unload can retry.
-Use `--no-hot-unload` or `false` to restore startup filling. The longer aliases are
-`--model-file-cache-hot-unload` / `--no-model-file-cache-hot-unload`. The measurements below used startup
+Use `--no-shard-cache-hot-unload` or `false` to restore startup filling. The measurements below used startup
 filling; hot-unload has not been benchmarked on that hardware.
 
 The server needs a sufficient `RLIMIT_MEMLOCK` (for a systemd service, e.g. `LimitMEMLOCK=34359738368` for 32 GiB).

@@ -177,9 +177,9 @@ class Ctx:
         gpus = list(getattr(self.computer, "gpus", None) or [])
         switches = P.switch_params(speed_switches.applicable(cfg, gpus, self.catalog.installed_backend()))
         # Server-owned options also belong in Advanced, including before an engine is installed.
-        for key, default, label, description in S.FILE_CACHE_OPTIONS:
+        for key, default, label, description in S.SHARD_CACHE_OPTIONS:
             value = (cfg or {}).get(key, default)
-            metavar = "on|off" if isinstance(default, bool) else "N|auto" if key == "model_file_cache_gib" else "N"
+            metavar = "on|off" if isinstance(default, bool) else "N|auto" if key == "shard_cache_gib" else "N"
             switches.append(P.Param(name="--" + key.replace("_", "-"), kind="flag", metavar=metavar,
                                     help_default=("on" if value else "off") if isinstance(default, bool) else str(value),
                                     values=["on", "off"] if isinstance(default, bool) else [],

@@ -535,7 +535,7 @@ def derive_config(base: dict, s: S.LaunchSettings, *, bool_flags: frozenset[str]
     """The private run config of this launch: the installed one plus the choices that are not setup's (host, port, key, cards, advanced)."""
     from strata_control import tune_knobs
     cfg = json.loads(json.dumps(base))
-    cfg.update(S.file_cache_overrides(s.extra))
+    cfg.update(S.shard_cache_overrides(s.extra))
     cfg["host"] = acc.host_for(s.access)
     cfg["port"] = int(s.port)
     if s.api_key:

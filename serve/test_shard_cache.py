@@ -10,36 +10,46 @@ import threading
 import unittest
 from unittest import mock
 
-from serve import model_file_cache as cache
+from serve import shard_cache as cache
 from serve import runconfig
 
 
 class Configuration(unittest.TestCase):
+    def test_old_config_keys_and_unprefixed_options_are_not_accepted(self):
+        with self.assertRaisesRegex(ValueError, 'shard_cache_gib'):
+            cache.settings({'model_file_cache_gib': 32})
+        from serve import server
+        for option in ('--hot-unload', '--model-file-cache-gib'):
+            with self.subTest(option=option), contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(SystemExit) as result:
+                server.main([option])
+            self.assertEqual(result.exception.code, 2)
+
     def test_default_off_performs_no_io(self):
-        with cache.ModelFileCache() as pin, mock.patch.object(cache, 'selected_file') as select:
+        with cache.ShardCache() as pin, mock.patch.object(cache, 'selected_file') as select:
             pin.start({}, [])
-            pin.start({'model_file_cache_gib': 0}, [])
+            pin.start({'shard_cache_gib': 0}, [])
             select.assert_not_called()
             self.assertIsNone(pin.address)
 
     def test_settings_roundtrip_and_rejection(self):
-        cfg, _ = runconfig.apply({}, {'model_file_cache_gib': 30, 'model_file_cache_shard': 3})
+        cfg, _ = runconfig.apply({}, {'shard_cache_gib': 30, 'shard_cache_shard': 3})
         self.assertEqual(cache.settings(cfg), (30, 3, 8))
-        cfg, _ = runconfig.apply(cfg, {'model_file_cache_gib': None})
+        cfg, _ = runconfig.apply(cfg, {'shard_cache_gib': None})
         self.assertEqual(cache.settings(cfg)[0], 0)
         for value in (-1, True, 1.5, '30', float('nan'), float('inf'), 65537):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                runconfig.apply({}, {'model_file_cache_gib': value})
+                runconfig.apply({}, {'shard_cache_gib': value})
 
     def test_auto_budget_roundtrips_and_remains_opt_in(self):
-        cfg, changed = runconfig.apply({}, {'model_file_cache_gib': 'auto'})
+        cfg, changed = runconfig.apply({}, {'shard_cache_gib': 'auto'})
         self.assertEqual(cache.settings(cfg), ('auto', None, 8))
-        self.assertEqual(changed, ['model_file_cache_gib'])
+        self.assertEqual(changed, ['shard_cache_gib'])
         self.assertEqual(cache.budget_arg('auto'), 'auto')
         self.assertEqual(cache.budget_arg('32'), 32)
         for value in ('all', 'auto:32', 'AUTO'):
             with self.subTest(value=value), self.assertRaises(ValueError):
-                runconfig.apply({}, {'model_file_cache_gib': value})
+                runconfig.apply({}, {'shard_cache_gib': value})
 
     def test_shards_follow_model_and_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -57,7 +67,7 @@ class Configuration(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cache.selected_file(cfg, args, 0)
             with self.assertRaises(ValueError):
-                runconfig.apply({}, {'model_file_cache_shard': 0})
+                runconfig.apply({}, {'shard_cache_shard': 0})
             with self.assertRaises(FileNotFoundError):
                 cache.selected_file(cfg, args, 2)
             self.assertEqual(cache.selected_file(cfg, ['--model', 'single.gguf'], None), root / 'single.gguf')
@@ -66,38 +76,38 @@ class Configuration(unittest.TestCase):
 
     def test_non_linux_refuses_enabled_feature(self):
         with mock.patch.object(cache.sys, 'platform', 'win32'), self.assertRaisesRegex(ValueError, 'Linux'):
-            cache.ModelFileCache().start({'model_file_cache_gib': 1}, [])
+            cache.ShardCache().start({'shard_cache_gib': 1}, [])
 
     def test_hot_unload_is_boolean_and_defaults_off(self):
         for value in ('true', 1, None):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'true or false'):
-                cache.settings({'model_file_cache_hot_unload': value})
-        cfg, changed = runconfig.apply({}, {'model_file_cache_hot_unload': True})
-        self.assertIs(cfg['model_file_cache_hot_unload'], True)
-        self.assertEqual(changed, ['model_file_cache_hot_unload'])
-        cfg, _ = runconfig.apply(cfg, {'model_file_cache_hot_unload': None})
-        self.assertNotIn('model_file_cache_hot_unload', cfg)
-        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'start') as start, \
+                cache.settings({'shard_cache_hot_unload': value})
+        cfg, changed = runconfig.apply({}, {'shard_cache_hot_unload': True})
+        self.assertIs(cfg['shard_cache_hot_unload'], True)
+        self.assertEqual(changed, ['shard_cache_hot_unload'])
+        cfg, _ = runconfig.apply(cfg, {'shard_cache_hot_unload': None})
+        self.assertNotIn('shard_cache_hot_unload', cfg)
+        with cache.ShardCache() as pin, mock.patch.object(pin, 'start') as start, \
                 mock.patch.object(cache, 'selected_file'):
-            pin.configure({'model_file_cache_gib': 1}, ['--native', 'unused.gguf'])
+            pin.configure({'shard_cache_gib': 1}, ['--native', 'unused.gguf'])
             start.assert_called_once()
 
     def test_disabled_cache_does_not_defer_or_touch_files(self):
-        with cache.ModelFileCache() as pin, mock.patch.object(cache, 'selected_file') as select:
-            pin.configure({'model_file_cache_hot_unload': True}, [])
+        with cache.ShardCache() as pin, mock.patch.object(cache, 'selected_file') as select:
+            pin.configure({'shard_cache_hot_unload': True}, [])
             pin.on_unload()
             select.assert_not_called()
 
     def test_web_controls_and_platform_validation(self):
         fields = {k['key']: k for k in runconfig.view({}, 'model.json')['keys']}
-        self.assertEqual(fields['model_file_cache_hot_unload']['kind'], 'bool')
-        self.assertTrue(fields['model_file_cache_hot_unload']['linux_only'])
-        self.assertEqual(fields['model_file_cache_gib']['step'], 1)
-        self.assertEqual(fields['model_file_cache_gib']['kind'], 'cache_budget')
+        self.assertEqual(fields['shard_cache_hot_unload']['kind'], 'bool')
+        self.assertTrue(fields['shard_cache_hot_unload']['linux_only'])
+        self.assertEqual(fields['shard_cache_gib']['step'], 1)
+        self.assertEqual(fields['shard_cache_gib']['kind'], 'cache_budget')
         with mock.patch.object(runconfig.sys, 'platform', 'darwin'):
             self.assertEqual(runconfig.view({}, 'model.json')['platform'], 'darwin')
             with self.assertRaisesRegex(ValueError, 'Linux'):
-                runconfig.apply({}, {'model_file_cache_gib': 32})
+                runconfig.apply({}, {'shard_cache_gib': 32})
 
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux mlock')
@@ -113,31 +123,31 @@ class LinuxPin(unittest.TestCase):
         self.addCleanup(available.stop)
 
     def test_auto_pins_only_selected_file_and_enforces_eight_gib_headroom(self):
-        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'pin') as lock:
-            pin.start({'model_file_cache_gib': 'auto', 'model_file_cache_headroom_gib': 0},
+        with cache.ShardCache() as pin, mock.patch.object(pin, 'pin') as lock:
+            pin.start({'shard_cache_gib': 'auto', 'shard_cache_headroom_gib': 0},
                       ['--native', str(self.path)])
             lock.assert_called_once_with(self.path, self.path.stat().st_size, 8 * cache.GIB)
-        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'pin') as lock:
-            pin.start({'model_file_cache_gib': 'auto', 'model_file_cache_headroom_gib': 12},
+        with cache.ShardCache() as pin, mock.patch.object(pin, 'pin') as lock:
+            pin.start({'shard_cache_gib': 'auto', 'shard_cache_headroom_gib': 12},
                       ['--native', str(self.path)])
             lock.assert_called_once_with(self.path, self.path.stat().st_size, 12 * cache.GIB)
 
     def test_auto_failure_warns_with_smaller_budget_in_both_modes(self):
         import resource
-        cfg = {'model_file_cache_gib': 'auto'}
+        cfg = {'shard_cache_gib': 'auto'}
         for hot in (False, True):
-            with self.subTest(hot=hot), cache.ModelFileCache() as pin:
+            with self.subTest(hot=hot), cache.ShardCache() as pin:
                 output = io.StringIO()
                 with mock.patch.object(cache, 'available_bytes', return_value=40 * cache.GIB), \
                         mock.patch('resource.getrlimit', return_value=(resource.RLIM_INFINITY, resource.RLIM_INFINITY)), \
                         mock.patch.object(Path, 'stat', return_value=mock.Mock(st_size=48 * cache.GIB)), \
                         mock.patch.object(pin, 'pin', side_effect=MemoryError('allocation refused')), \
                         contextlib.redirect_stdout(output):
-                    pin.configure({**cfg, 'model_file_cache_hot_unload': hot}, ['--native', str(self.path)])
+                    pin.configure({**cfg, 'shard_cache_hot_unload': hot}, ['--native', str(self.path)])
                     if hot:
                         pin.on_unload()
                 self.assertIn('WARNING', output.getvalue())
-                self.assertIn('--model-file-cache-gib 32', output.getvalue())
+                self.assertIn('--shard-cache-gib 32', output.getvalue())
                 self.assertIn('at least 8 GiB', output.getvalue())
                 self.assertIsNone(pin.address)
 
@@ -146,19 +156,19 @@ class LinuxPin(unittest.TestCase):
         with mock.patch.object(cache, 'available_bytes', return_value=40 * cache.GIB), \
                 mock.patch('resource.getrlimit', return_value=(20 * cache.GIB, 20 * cache.GIB)), \
                 mock.patch.object(Path, 'stat', return_value=mock.Mock(st_size=48 * cache.GIB)):
-            suggestion = cache.ModelFileCache._suggestion({'model_file_cache_gib': 'auto',
-                                                           'model_file_cache_headroom_gib': 24}, args)
-            self.assertIn('--model-file-cache-gib 16', suggestion)
+            suggestion = cache.ShardCache._suggestion({'shard_cache_gib': 'auto',
+                                                           'shard_cache_headroom_gib': 24}, args)
+            self.assertIn('--shard-cache-gib 16', suggestion)
             self.assertIn('24 GiB', suggestion)
         with mock.patch.object(cache, 'available_bytes', return_value=8 * cache.GIB):
-            suggestion = cache.ModelFileCache._suggestion({'model_file_cache_gib': 'auto'}, args)
-            self.assertIn('--model-file-cache-gib 0', suggestion)
+            suggestion = cache.ShardCache._suggestion({'shard_cache_gib': 'auto'}, args)
+            self.assertIn('--shard-cache-gib 0', suggestion)
 
     def test_auto_real_pin_is_released_after_hot_reload(self):
         svc = self.service()
-        with cache.ModelFileCache() as pin:
-            svc.model_file_cache = pin
-            pin.configure({'model_file_cache_gib': 'auto', 'model_file_cache_hot_unload': True},
+        with cache.ShardCache() as pin:
+            svc.shard_cache = pin
+            pin.configure({'shard_cache_gib': 'auto', 'shard_cache_hot_unload': True},
                           ['--native', str(self.path)])
             svc.load()
             self.assertIsNone(pin.address)
@@ -176,10 +186,10 @@ class LinuxPin(unittest.TestCase):
 
     def test_hot_unload_fills_after_release_then_unlocks_after_arena_ready(self):
         svc = self.service()
-        cfg = {'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
-               'model_file_cache_hot_unload': True}
-        with cache.ModelFileCache() as pin:
-            svc.model_file_cache = pin
+        cfg = {'shard_cache_gib': 1, 'shard_cache_headroom_gib': 0,
+               'shard_cache_hot_unload': True}
+        with cache.ShardCache() as pin:
+            svc.shard_cache = pin
             pin.configure(cfg, ['--native', str(self.path)])
             self.assertIsNone(pin.address)
             self.assertEqual(svc.unload(), 'not loaded')
@@ -218,27 +228,27 @@ class LinuxPin(unittest.TestCase):
 
     def test_startup_and_unload_allocation_failure_warn_and_continue(self):
         for hot in (False, True):
-            with self.subTest(hot=hot), cache.ModelFileCache() as pin:
+            with self.subTest(hot=hot), cache.ShardCache() as pin:
                 svc = self.service()
-                svc.model_file_cache = pin
+                svc.shard_cache = pin
                 svc.engine.restart()
-                cfg = {'model_file_cache_gib': 1, 'model_file_cache_hot_unload': hot}
+                cfg = {'shard_cache_gib': 1, 'shard_cache_hot_unload': hot}
                 output = io.StringIO()
                 with mock.patch.object(cache, 'available_bytes', return_value=0), \
                         contextlib.redirect_stdout(output):
                     pin.configure(cfg, ['--native', str(self.path)])
                     self.assertEqual(svc.unload(), 'unloaded')
-                self.assertIn('WARNING: model file cache unavailable', output.getvalue())
+                self.assertIn('WARNING: shard cache unavailable', output.getvalue())
                 self.assertIsNone(pin.address)
                 self.assertEqual(pin.length, 0)
                 svc.load()  # warning did not break the model lifecycle
 
     def test_failed_arena_load_keeps_pin_for_retry(self):
         svc = self.service()
-        with cache.ModelFileCache() as pin:
-            svc.model_file_cache = pin
-            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
-                           'model_file_cache_hot_unload': True}, ['--native', str(self.path)])
+        with cache.ShardCache() as pin:
+            svc.shard_cache = pin
+            pin.configure({'shard_cache_gib': 1, 'shard_cache_headroom_gib': 0,
+                           'shard_cache_hot_unload': True}, ['--native', str(self.path)])
             svc.engine.restart()
             svc.unload()
             address = pin.address
@@ -251,9 +261,9 @@ class LinuxPin(unittest.TestCase):
 
     def test_default_startup_pin_is_kept_after_load_and_unload(self):
         svc = self.service()
-        with cache.ModelFileCache() as pin:
-            svc.model_file_cache = pin
-            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0},
+        with cache.ShardCache() as pin:
+            svc.shard_cache = pin
+            pin.configure({'shard_cache_gib': 1, 'shard_cache_headroom_gib': 0},
                           ['--native', str(self.path)])
             address = pin.address
             self.assertIsNotNone(address)
@@ -263,9 +273,9 @@ class LinuxPin(unittest.TestCase):
             self.assertEqual(pin.address, address)
 
     def test_hot_unload_failure_releases_partial_pin_and_can_retry(self):
-        cfg = {'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
-               'model_file_cache_hot_unload': True}
-        with cache.ModelFileCache() as pin:
+        cfg = {'shard_cache_gib': 1, 'shard_cache_headroom_gib': 0,
+               'shard_cache_hot_unload': True}
+        with cache.ShardCache() as pin:
             pin.configure(cfg, ['--native', str(self.path)])
             with mock.patch.object(cache, 'available_bytes', return_value=0):
                 pin.on_unload()
@@ -275,18 +285,18 @@ class LinuxPin(unittest.TestCase):
             self.assertIsNotNone(pin.address)
 
     def test_server_exit_cancels_deferred_fill(self):
-        pin = cache.ModelFileCache()
+        pin = cache.ShardCache()
         with pin, mock.patch.object(pin, 'start') as start:
-            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_hot_unload': True},
+            pin.configure({'shard_cache_gib': 1, 'shard_cache_hot_unload': True},
                           ['--native', str(self.path)])
         pin.on_unload()  # an idle worker after shutdown must not create a new pin
         start.assert_not_called()
         self.assertIsNone(pin.address)
 
     def test_shutdown_waits_for_an_in_progress_fill_then_unlocks(self):
-        pin = cache.ModelFileCache()
-        pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
-                       'model_file_cache_hot_unload': True}, ['--native', str(self.path)])
+        pin = cache.ShardCache()
+        pin.configure({'shard_cache_gib': 1, 'shard_cache_headroom_gib': 0,
+                       'shard_cache_hot_unload': True}, ['--native', str(self.path)])
         filling, release, closed = threading.Event(), threading.Event(), threading.Event()
         real_start = pin.start
         def start(*args):
@@ -322,7 +332,7 @@ class LinuxPin(unittest.TestCase):
             return next(int(s.split()[1]) for s in Path('/proc/self/status').read_text().splitlines()
                         if s.startswith('VmLck:'))
         before = locked()
-        with cache.ModelFileCache() as pin:
+        with cache.ShardCache() as pin:
             pin.pin(self.path, 8192, 0)
             self.assertEqual(locked(), before + 8)
             fd = os.open(self.path, os.O_RDONLY)
@@ -340,9 +350,9 @@ class LinuxPin(unittest.TestCase):
 
     def test_refuses_limit_and_headroom_before_mapping(self):
         with mock.patch('resource.getrlimit', return_value=(0, 0)), self.assertRaisesRegex(ValueError, 'LimitMEMLOCK'):
-            cache.ModelFileCache().pin(self.path, 8192, 0)
+            cache.ShardCache().pin(self.path, 8192, 0)
         with mock.patch.object(cache, 'available_bytes', return_value=0), self.assertRaisesRegex(ValueError, 'RAM'):
-            cache.ModelFileCache().pin(self.path, 8192, 0)
+            cache.ShardCache().pin(self.path, 8192, 0)
 
     def test_mlock_failure_unmaps_and_clears_state(self):
         libc = ctypes.CDLL(None, use_errno=True)
@@ -354,7 +364,7 @@ class LinuxPin(unittest.TestCase):
             calls += 1
             return real_lock(address, count) if calls == 1 else -1
         libc.mlock = mock.Mock(side_effect=fail_second)
-        pin = cache.ModelFileCache()
+        pin = cache.ShardCache()
         with mock.patch.object(cache, 'LOCK_CHUNK', 4096), \
                 mock.patch.object(cache.ctypes, 'CDLL', return_value=libc), self.assertRaises(OSError):
             pin.pin(self.path, 8192, 0)
@@ -364,14 +374,14 @@ class LinuxPin(unittest.TestCase):
 
     def test_server_owns_pin_until_exit_including_errors(self):
         from serve import server
-        pin = cache.ModelFileCache()
-        def run(*args, file_cache, **kwargs):
-            file_cache.pin(self.path, 8192, 0)
+        pin = cache.ShardCache()
+        def run(*args, cache_pin, **kwargs):
+            cache_pin.pin(self.path, 8192, 0)
             engine = mock.Mock()
             engine.unload()
-            self.assertIsNotNone(file_cache.address)  # engine unload does not own or close the mapping
+            self.assertIsNotNone(cache_pin.address)  # engine unload does not own or close the mapping
             raise RuntimeError('startup or server failure')
-        with mock.patch.object(server.model_file_cache, 'ModelFileCache', return_value=pin), \
+        with mock.patch.object(server.shard_cache, 'ShardCache', return_value=pin), \
                 mock.patch.object(server, '_main', side_effect=run), self.assertRaises(RuntimeError):
             server.main([])
         self.assertIsNone(pin.address)

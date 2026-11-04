@@ -1417,7 +1417,7 @@ class AdvancedScreen(Base):
     def set_value(self, key: str, value: str) -> None:
         s = self.ctx.settings
         try:
-            S.file_cache_overrides({**s.extra, key: value})
+            S.shard_cache_overrides({**s.extra, key: value})
         except ValueError as e:
             self.say(str(e), True)
             return

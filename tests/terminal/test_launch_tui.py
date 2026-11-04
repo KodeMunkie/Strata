@@ -565,24 +565,24 @@ class AdvancedStep(Base):
         # The drafting screen precedes tuning; one more Enter reaches Advanced.
         return ("enter",) * 8
 
-    def test_file_cache_controls_can_be_edited_and_reject_bad_values(self):
+    def test_shard_cache_controls_can_be_edited_and_reject_bad_values(self):
         ctx = self.ctx_with_engine()
         async def case(app, pilot, ctx):
             await press(pilot, *self.reach())
             screen = app.screen
             names = {r.name for r in screen.rows}
-            self.assertTrue(set(S.FILE_CACHE_FLAGS).issubset(names))
-            screen.set_value('--model-file-cache-gib', '32')
-            screen.set_value('--model-file-cache-shard', '3')
-            screen.set_value('--model-file-cache-hot-unload', 'on')
-            screen.set_value('--model-file-cache-gib', '-1')
-            self.assertEqual(ctx.settings.extra['--model-file-cache-gib'], '32')
-            self.assertIs(S.file_cache_overrides(ctx.settings.extra)['model_file_cache_hot_unload'], True)
-            self.assertIn('--model-file-cache-gib 32', S.flags_text(ctx.settings))
-            self.assertNotIn('--model-file-cache-gib', ctx.command_text())  # server flags never reach the engine
-            screen.set_value('--model-file-cache-gib', 'auto')
-            self.assertEqual(S.file_cache_overrides(ctx.settings.extra)['model_file_cache_gib'], 'auto')
-            self.assertIn('--model-file-cache-gib auto', S.flags_text(ctx.settings))
+            self.assertTrue(set(S.SHARD_CACHE_FLAGS).issubset(names))
+            screen.set_value('--shard-cache-gib', '32')
+            screen.set_value('--shard-cache-shard', '3')
+            screen.set_value('--shard-cache-hot-unload', 'on')
+            screen.set_value('--shard-cache-gib', '-1')
+            self.assertEqual(ctx.settings.extra['--shard-cache-gib'], '32')
+            self.assertIs(S.shard_cache_overrides(ctx.settings.extra)['shard_cache_hot_unload'], True)
+            self.assertIn('--shard-cache-gib 32', S.flags_text(ctx.settings))
+            self.assertNotIn('--shard-cache-gib', ctx.command_text())  # server flags never reach the engine
+            screen.set_value('--shard-cache-gib', 'auto')
+            self.assertEqual(S.shard_cache_overrides(ctx.settings.extra)['shard_cache_gib'], 'auto')
+            self.assertIn('--shard-cache-gib auto', S.flags_text(ctx.settings))
         self.run_app(case, ctx=ctx)
 
     def ctx_with_engine(self):

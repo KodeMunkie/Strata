@@ -176,6 +176,13 @@ class Ctx:
         from strata_control import speed_switches
         gpus = list(getattr(self.computer, "gpus", None) or [])
         switches = P.switch_params(speed_switches.applicable(cfg, gpus, self.catalog.installed_backend()))
+        # Server-owned options also belong in Advanced, including before an engine is installed.
+        for key, default, label, description in S.FILE_CACHE_OPTIONS:
+            value = (cfg or {}).get(key, default)
+            switches.append(P.Param(name="--" + key.replace("_", "-"), kind="flag", metavar="on|off" if isinstance(default, bool) else "N",
+                                    help_default=("on" if value else "off") if isinstance(default, bool) else str(value),
+                                    values=["on", "off"] if isinstance(default, bool) else [],
+                                    description=label, full=description))
         self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra, switches)
         return self._adv
 

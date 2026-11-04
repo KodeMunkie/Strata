@@ -290,6 +290,29 @@ class RunConfig(unittest.TestCase):
     BASE = {"exe": "component:strata-engine", "args": ["--native", "x.gguf", "--max-context", "32768", "--kv", "int8", "--prefill", "auto"],
             "port": 8095, "model_name": "m", "env": {}}
 
+    def test_file_cache_controls_are_server_owned_and_default_off(self):
+        cfg = derive_config(self.BASE, S.LaunchSettings(), bool_flags=frozenset())
+        self.assertFalse(any(k.startswith('model_file_cache_') for k in cfg))
+        s = S.LaunchSettings(extra={'--model-file-cache-gib': '32', '--model-file-cache-shard': '3',
+                                    '--model-file-cache-headroom-gib': '6', '--model-file-cache-hot-unload': 'on'})
+        cfg = derive_config(self.BASE, s, bool_flags=frozenset())
+        self.assertEqual(cfg['args'], self.BASE['args'])
+        self.assertEqual(cfg['model_file_cache_gib'], 32)
+        self.assertEqual(cfg['model_file_cache_shard'], 3)
+        self.assertEqual(cfg['model_file_cache_headroom_gib'], 6)
+        self.assertIs(cfg['model_file_cache_hot_unload'], True)
+        self.assertIn('--model-file-cache-gib 32', S.flags_text(s))
+        self.assertIn('--model-file-cache-hot-unload', S.flags_text(s))
+        s.extra['--model-file-cache-hot-unload'] = 'off'
+        self.assertIn('--no-model-file-cache-hot-unload', S.flags_text(s))
+        for value in ('-1', '1.5', '65537', 'true'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                S.file_cache_overrides({'--model-file-cache-gib': value})
+        with mock.patch.object(S.sys, 'platform', 'darwin'):
+            with self.assertRaisesRegex(ValueError, 'Linux'):
+                S.file_cache_overrides({'--model-file-cache-gib': '32'})
+            self.assertEqual(S.file_cache_overrides({'--model-file-cache-gib': '0'}), {'model_file_cache_gib': 0})
+
     def test_derive_applies_access_key_and_advanced(self):
         s = S.LaunchSettings(access="lan", port=9001, api_key="sk-k", extra={"--prefill": "65536", "--kv-grow": "", "STRATA_PIN_BY_NEED": "1"})
         cfg = derive_config(self.BASE, s, bool_flags=frozenset({"--kv-grow"}))
@@ -862,6 +885,27 @@ class FlagsCommand(unittest.TestCase):
         self.assertEqual(p["settings"]["mtp"], "off")
         self.assertIn("--mtp off", p["flags"])
         code, out, err = run_cli(["launch", "--plan", "--mtp", "maybe"])
+        self.assertNotEqual(code, 0)
+
+    def test_file_cache_flags_plan_and_override_a_preset(self):
+        p = self.plan('--model', 'q2_0', '--model-file-cache-gib', '32', '--model-file-cache-shard', '3',
+                      '--model-file-cache-headroom-gib', '8', '--hot-unload')
+        self.assertEqual(S.file_cache_overrides(p['settings']['extra']),
+                         {'model_file_cache_gib': 32, 'model_file_cache_shard': 3,
+                          'model_file_cache_headroom_gib': 8, 'model_file_cache_hot_unload': True})
+        self.assertIn('--model-file-cache-gib 32', p['flags'])
+        store.save(S.LaunchSettings(name='File cache', extra=p['settings']['extra']))
+        p = self.plan('--preset', 'File cache', '--model-file-cache-gib', '0', '--no-model-file-cache-hot-unload')
+        self.assertEqual(S.file_cache_overrides(p['settings']['extra']),
+                         {'model_file_cache_gib': 0, 'model_file_cache_shard': 3,
+                          'model_file_cache_headroom_gib': 8, 'model_file_cache_hot_unload': False})
+        p = self.plan('--set', 'model-file-cache-hot-unload=on', '--no-model-file-cache-hot-unload')
+        self.assertIs(S.file_cache_overrides(p['settings']['extra'])['model_file_cache_hot_unload'], False)
+        p = self.plan('--set', 'hot-unload=on')
+        self.assertIs(S.file_cache_overrides(p['settings']['extra'])['model_file_cache_hot_unload'], True)
+        code, out, err = run_cli(['launch', '--plan', '--model-file-cache-gib', '-1'])
+        self.assertNotEqual(code, 0)
+        code, out, err = run_cli(['launch', '--plan', '--model-file-cache-shard', '0'])
         self.assertNotEqual(code, 0)
 
     def test_vision_help_says_the_picture_rule(self):

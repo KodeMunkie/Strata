@@ -655,14 +655,17 @@ async function loadConfig() {
     if (k.kind === "bool" || k.kind === "enum") {
       const opts = k.kind === "bool" ? [["true", "on"], ["false", "off"]] : k.choices.map((x) => [x, x]);
       const cur = v == null ? "" : String(v);
-      input = `<select class="st-input" id="${id}"><option value=""${cur === "" ? " selected" : ""}>default</option>` +
+      input = `<select class="st-input" id="${id}" ${k.linux_only && c.platform !== 'linux' ? 'disabled title="Linux only; macOS and Windows are not supported"' : ''}><option value=""${cur === "" ? " selected" : ""}>default</option>` +
         opts.map(([val, text]) => `<option value="${esc(val)}"${cur === val ? " selected" : ""}>${esc(text)}</option>`).join("") + `</select>`;
     } else {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
-      input = `<input class="st-input" id="${id}" ${k.kind === "number" ? 'type="number" step="any" min="0"' : 'type="text"'} ` +
+      input = `<input class="st-input" id="${id}" ${k.kind === "number" ? `type="number" step="${k.step || 'any'}" min="0"` : 'type="text"'} ` +
+        `${k.linux_only && c.platform !== 'linux' ? 'disabled title="Linux only; macOS and Windows are not supported"' : ''} ` +
         `value="${esc(text)}" placeholder="default" autocomplete="off">`;
     }
-    return `<label for="${id}" title="${esc(k.help)}">${esc(k.help)}<code>${esc(k.key)}</code></label>${input}`;
+    const note = k.key === "model_file_cache_gib"
+      ? '<p class="muted small" style="grid-column:1/-1">Model file cache: Linux only, off by default. Caches one numbered shard; default 3, or the last available if fewer. Choose the RAM budget; 32 GiB is an example. Normally retained from server startup until exit. Hot-unload fills after model unload and releases the pin after the next arena load. Allocation failures warn and continue. Restart the server after changing these settings.</p>' : '';
+    return note + `<label for="${id}" title="${esc(k.help)}">${esc(k.label || k.help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
 }
@@ -686,7 +689,10 @@ $("cfg-save").addEventListener("click", async () => {
     const b = await r.json();
     if (!r.ok) throw new Error((b.error || {}).message || `HTTP ${r.status}`);
     $("cfg-msg").textContent = b.changed.length
-      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. Start the model again to use it.` : "Nothing changed.";
+      ? `Saved (${b.changed.join(", ")}); the earlier file is ${b.file}.bak. ` +
+        (b.changed.some((k) => k.startsWith("model_file_cache_"))
+          ? "Restart the Strata server to apply new file-cache settings."
+          : "Start the model again to use it.") : "Nothing changed.";
     loadConfig();
   } catch (e) {
     $("cfg-msg").textContent = "";

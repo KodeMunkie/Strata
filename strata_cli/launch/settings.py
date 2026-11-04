@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import sys
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
@@ -61,6 +62,39 @@ def speed_words(speed: str, default: bool) -> str:
     return "Full quality" + (" (default on this PC)" if default else "") + ": all 6 experts per word"
 KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
 DEFAULT_PORT = 8080
+FILE_CACHE_OPTIONS = (
+    ("model_file_cache_gib", 0, "Model file cache (GiB)",
+     "Linux only: RAM retained across model unloads for faster reloads. 0 disables it; the size is configurable."),
+    ("model_file_cache_shard", 3, "Model file cache shard",
+     "One GGUF shard matching its filename: 1 is first, 3 is third. Default 3, or the last available if fewer. 0 is invalid."),
+    ("model_file_cache_headroom_gib", 6, "File cache RAM headroom (GiB)",
+     "Available RAM to leave while filling the cache; allow additional RAM for the model arena."),
+    ("model_file_cache_hot_unload", False, "Hot-unload file cache",
+     "Fill on model unload, release after the next arena load. Off by default: fill at server startup and retain until exit."),
+)
+FILE_CACHE_FLAGS = {"--" + key.replace("_", "-"): key for key, *_ in FILE_CACHE_OPTIONS}
+
+
+def file_cache_overrides(extra: dict) -> dict:
+    """Server settings, shared by the launch flags and Advanced TUI; never engine arguments."""
+    out = {}
+    for flag, key in FILE_CACHE_FLAGS.items():
+        if flag not in extra or extra[flag] == "":
+            continue
+        raw = str(extra[flag]).strip()
+        if key == "model_file_cache_hot_unload":
+            if raw.lower() not in ("on", "off", "true", "false", "1", "0"):
+                raise ValueError(f"{flag}: use on or off")
+            out[key] = raw.lower() in ("on", "true", "1")
+            continue
+        raw = "0" if raw.lower() == "off" else raw
+        minimum = 1 if key == 'model_file_cache_shard' else 0
+        if not raw.isascii() or not raw.isdecimal() or not minimum <= int(raw) <= 65536:
+            raise ValueError(f"{flag}: use a whole number in {minimum}..65536")
+        out[key] = int(raw)
+    if out.get("model_file_cache_gib", 0) and not sys.platform.startswith("linux"):
+        raise ValueError("The model file RAM cache is Linux-only; macOS and Windows are not supported. Use 0 to disable it.")
+    return out
 
 #: How many requests the card can answer at once (the spec's "fit to card" default): by graphics memory.
 PARALLEL_BY_VRAM = ((32.0, 4), (24.0, 3), (20.0, 2), (0.0, 1))
@@ -278,6 +312,8 @@ def split_setting(text: str) -> tuple[str, str]:
         return key, value.strip()
     flag = key[2:] if key.startswith("--") else key
     flag = flag.replace("_", "-")
+    if flag == "hot-unload":
+        flag = "model-file-cache-hot-unload"
     if not _FLAG_NAME.match(flag):
         raise ValueError(f"'{text}' is not a setting name. Write it like prefill=65536 or STRATA_PIN_BY_NEED=1.")
     return "--" + flag, value.strip()
@@ -305,6 +341,8 @@ def as_argv_changes(extra: dict[str, str], bool_flags: frozenset[str]) -> tuple[
     args: dict[str, Any] = {}
     env: dict[str, str | None] = {}
     for key, value in extra.items():
+        if key in FILE_CACHE_FLAGS:
+            continue                              # these belong to serve/server.py, not the C++ engine
         if key.startswith("--"):
             low = value.lower()
             if key in WORD_VALUE_FLAGS and key not in bool_flags:
@@ -364,6 +402,14 @@ def flags_text(s: LaunchSettings, *, preset: str | None = None) -> str:
         elif s.gpus:
             parts.append("--gpu " + ",".join(str(g) for g in s.gpus))
     for k, v in sorted(s.extra.items()):
+        if k in FILE_CACHE_FLAGS:
+            if v != "":
+                value = file_cache_overrides({k: v})[FILE_CACHE_FLAGS[k]]
+                if isinstance(value, bool):
+                    parts.append(k if value else "--no-" + k[2:])
+                else:
+                    parts.append(f"{k} {value}")
+            continue
         parts.append(f"--set {k[2:] if k.startswith('--') else k}={v}" if v else f"--set {k[2:] if k.startswith('--') else k}")
     return " ".join(parts)
 

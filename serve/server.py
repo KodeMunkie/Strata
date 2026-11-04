@@ -4575,6 +4575,7 @@ class Service:
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
         # server's model); the next request after an unload starts the engine again
         self.idle_unload_s = 0
+        self.model_file_cache = None                     # server-owned pin, retained across engine unloads
         self.min_free_vram_mib = 0
         self.before_load = None
         self.before_load_timeout_s = 120.0               # #1997: how long the before_load command may run
@@ -5072,6 +5073,8 @@ class Service:
             if isinstance(e, OSError):
                 raise EngineDied(f"the engine could not be started: {e}") from e
             raise
+        if self.model_file_cache is not None:
+            self.model_file_cache.on_load()              # restart() returned only after READY / arena load
         print("[strata] the engine is running again", flush=True)
         if self.restore_after_load:                      # an image job unloaded it: its conversation comes back
             images_api.restore_session(self)
@@ -5185,6 +5188,8 @@ class Service:
             if self.vision is not None and hasattr(self.vision, "unload"):
                 self.vision.unload()
             self.vision_held = False
+            if self.model_file_cache is not None:
+                self.model_file_cache.on_unload()
             print(f"[strata] model unloaded{f' after {idle_for:.0f} s idle' if idle_for else ''}; "
                   "the next request loads it again", flush=True)
             return "unloaded"
@@ -9515,7 +9520,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
     ap.add_argument("--model-file-cache-gib", type=int, default=None,
                     help="Linux: pin this many GiB of a model shard in RAM until the server exits (0: off)")
     ap.add_argument("--model-file-cache-shard", type=int, default=None,
-                    help="model shard number to pin (1-based; 0: last shard)")
+                    help="model shard number to pin, matching its filename (1-based; default: 3, or last available if fewer)")
+    ap.add_argument("--model-file-cache-headroom-gib", type=int, default=None,
+                    help="Linux: available RAM to leave while filling the model file cache (default 6 GiB)")
+    ap.add_argument("--model-file-cache-hot-unload", "--hot-unload", action=argparse.BooleanOptionalAction, default=None,
+                    help="fill the cache on model unload, release it after the next arena load (default: off)")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
@@ -9620,7 +9629,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
-    for key in ("model_file_cache_gib", "model_file_cache_shard"):
+    for key in ("model_file_cache_gib", "model_file_cache_shard", "model_file_cache_headroom_gib",
+                "model_file_cache_hot_unload"):
         if getattr(a, key) is not None:
             cfg[key] = getattr(a, key)
     try:
@@ -9743,7 +9753,7 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
         cfg = apply_vision_defaults(with_component_engine(cfg))
         if cfg.get("model_file_cache_gib"):
             try:
-                file_cache.start(cfg, engine_args(cfg, announce=False))
+                file_cache.configure(cfg, engine_args(cfg, announce=False))
             except (OSError, ValueError) as exc:
                 ap.error(f"model file cache: {exc}")
         vision = None
@@ -9856,6 +9866,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
     svc.launch_attestation = launch_attestation
+    if a.engine == "strata" and cfg.get("model_file_cache_gib"):
+        svc.model_file_cache = file_cache
     if (cfg.get("arch") or "") == "deepseek41" and vision is None and a.engine == "strata":
         # DeepSeek-V4.1 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
         # `--vision off` in the config's args, or a pack without a tower, leaves svc.vision None: pictures are refused with the 400 as before.

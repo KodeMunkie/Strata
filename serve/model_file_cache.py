@@ -7,24 +7,32 @@ from pathlib import Path
 import re
 import stat
 import sys
+import threading
 
 GIB = 1 << 30
 LOCK_CHUNK = 256 << 20
+DEFAULT_SHARD = 3  # Qwen3.8 Flash Next UD-IQ4_XS: third shard, or last available for smaller layouts
 
 
 def settings(cfg):
+    if type(cfg.get('model_file_cache_hot_unload', False)) is not bool:
+        raise ValueError('model_file_cache_hot_unload: expected true or false')
     values = []
-    for key, default in (("model_file_cache_gib", 0), ("model_file_cache_shard", 0),
+    for key, default in (("model_file_cache_gib", 0), ("model_file_cache_shard", None),
                          ("model_file_cache_headroom_gib", 6)):
         value = cfg.get(key, default)
-        if type(value) is not int or not 0 <= value <= 65536:
-            raise ValueError(f"{key}: expected a whole number in 0..65536")
+        if key == 'model_file_cache_shard' and key not in cfg:
+            values.append(None)  # default resolved against this model's shard count, never a numeric sentinel
+            continue
+        minimum = 1 if key == 'model_file_cache_shard' else 0
+        if type(value) is not int or not minimum <= value <= 65536:
+            raise ValueError(f"{key}: expected a whole number in {minimum}..65536")
         values.append(value)
     return tuple(values)
 
 
 def selected_file(cfg, args, shard):
-    """Select by shard number, without tensor offsets or model-specific names. Zero means last."""
+    """Select exactly one file by its 1-based shard number, without model-specific tensor offsets."""
     names = [v for k, v in zip(args, args[1:]) if k in ("--native", "--model")]
     if not names:
         raise ValueError("model file cache needs --native or --model naming a GGUF file")
@@ -35,7 +43,7 @@ def selected_file(cfg, args, shard):
         raise ValueError("model file cache supports GGUF files only")
     match = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})\.gguf", path.name)
     count = int(match[3]) if match else 1
-    number = shard or count
+    number = min(DEFAULT_SHARD, count) if shard is None else shard
     if not 1 <= number <= count:
         raise ValueError(f"model_file_cache_shard: model has {count} shard(s), requested {number}")
     if match:
@@ -63,6 +71,43 @@ class ModelFileCache:
         self.length = 0
         self.path = None
         self._libc = None
+        self._deferred = None
+        self._lock = threading.RLock()
+
+    def configure(self, cfg, args):
+        """Fill at startup by default; optionally defer until a normal engine unload."""
+        budget, shard, _ = settings(cfg)
+        if not budget:
+            return
+        if not sys.platform.startswith('linux'):
+            raise ValueError('model file cache is currently supported on Linux only')
+        selected_file(cfg, args, shard)  # bad filenames/shard choices are configuration errors, not RAM failures
+        if cfg.get('model_file_cache_hot_unload', False):
+            self._deferred = (dict(cfg), list(args))
+            print('[strata] model file cache: fill deferred until model unload (hot-unload)', flush=True)
+        else:
+            self._fill(cfg, args)
+
+    def _fill(self, cfg, args):
+        try:
+            self.start(cfg, args)
+        except (OSError, ValueError, MemoryError) as exc:
+            self._release()
+            print(f'[strata] WARNING: model file cache unavailable; continuing without a pin: {exc}', flush=True)
+
+    def on_unload(self):
+        """Called after engine/vision RAM is released, under the service's request lock."""
+        with self._lock:
+            if self._deferred is not None and self.address is None:
+                cfg, args = self._deferred
+                self._fill(cfg, args)
+
+    def on_load(self):
+        """The engine has reached READY, so its arena no longer needs the hot-unload pin."""
+        with self._lock:
+            if self._deferred is not None and self.address is not None:
+                self._release()
+                print('[strata] hot-unload file cache released after model load; RAM is reclaimable again', flush=True)
 
     def start(self, cfg, args):
         budget, shard, headroom = settings(cfg)
@@ -117,17 +162,22 @@ class ModelFileCache:
                 if done % GIB == 0:
                     print(f'[strata] model file cache: pinned {done / GIB:g}/{length / GIB:.2f} GiB', flush=True)
         except BaseException:
-            self.close()
+            self._release()
             raise
-        print(f'[strata] model file cache: {length / GIB:.2f} GiB pinned from {path}; '
-              'kept across engine unloads until the server exits', flush=True)
+        lifetime = 'until the next model load completes' if self._deferred else 'until the server exits'
+        print(f'[strata] model file cache: {length / GIB:.2f} GiB pinned from {path}; kept {lifetime}', flush=True)
 
-    def close(self):
+    def _release(self):
         if self.address is not None:
             self._libc.munlock(self.address, self.length)
             self._libc.munmap(self.address, self.length)
             self.address = None
             self.length = 0
+
+    def close(self):
+        with self._lock:
+            self._deferred = None
+            self._release()
 
     def __enter__(self):
         return self

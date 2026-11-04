@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from strata_control import user_args
@@ -34,8 +35,10 @@ EDITABLE = [
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
     ("model_file_cache_gib", "int>=0", "Linux: pin up to this many GiB of a GGUF shard in RAM across engine unloads "
-     "until the server exits (0 or empty: off; requires enough RAM and a raised memory-lock limit)"),
-    ("model_file_cache_shard", "int>=0", "GGUF shard to cache, numbered from 1 (0 or empty: last shard)"),
+     "(0 or empty: off; hot-unload releases after the next arena load; requires enough RAM and a memory-lock allowance)"),
+    ("model_file_cache_shard", "int>=0", "One GGUF shard: 1 is first, 3 is third (empty: 3, or last available if fewer; 0 is invalid)"),
+    ("model_file_cache_hot_unload", "bool", "Fill the file cache on normal model unload, release its pin after the "
+     "next arena load (off or empty: fill at startup and retain until server exit). Unload waits for the fill."),
     ("model_file_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the file cache (empty: 6 GiB; "
      "does not include RAM the engine will allocate afterward)"),
     ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
@@ -75,8 +78,13 @@ def view(cfg: dict, path: str | Path) -> dict:
         k = kind[0] if isinstance(kind, tuple) else kind
         out.append({"key": key, "value": value_of(cfg, key), "help": help_,
                     "kind": "number" if k in ("sampling", "arg", "int>=0", "num>=0") else k,
+                    **({"label": {"model_file_cache_gib": "Model file RAM cache (GiB)",
+                                  "model_file_cache_shard": "Shard to cache (from 1)",
+                                  "model_file_cache_hot_unload": "Hot-unload (defer cache fill)",
+                                  "model_file_cache_headroom_gib": "RAM headroom while filling (GiB)"}[key],
+                        "step": 1, "linux_only": True} if key.startswith("model_file_cache_") else {}),
                     **({"choices": kind[1]} if k == "enum" else {})})
-    return {"file": Path(path).name, "keys": out,
+    return {"file": Path(path).name, "keys": out, "platform": sys.platform,
             "note": "Saved to the run config; used from the next start of the model."}
 
 
@@ -97,6 +105,8 @@ def check(key: str, v, cfg: dict):
     if key.startswith("model_file_cache_"):
         from serve.model_file_cache import settings
         settings({key: v})
+        if key == "model_file_cache_gib" and v and not sys.platform.startswith("linux"):
+            raise ValueError("The model file RAM cache is Linux-only; macOS and Windows are not supported")
         return v
     kind = SPEC[key]
     k = kind[0] if isinstance(kind, tuple) else kind

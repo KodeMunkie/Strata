@@ -510,28 +510,67 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 #### Keep part of a model file in RAM (Linux, off by default)
 
 On a drive whose sustained reads slow down, an optional file-cache pin can keep part of a GGUF shard in RAM
-between engine unloads and reloads. It belongs to the **server**: `/unload` and idle unload leave it resident;
-stopping the server releases it. It is not a tensor cache and needs no model-specific weight offsets.
+between engine unloads and reloads. It belongs to the **server**: by default, `/unload` and idle unload leave it
+resident until server exit. The optional hot-unload mode releases the pin after each reload instead. It is not a
+tensor cache and needs no model-specific weight offsets.
 
 Set these keys outside `args` in the run config, or edit them in the web page's Model settings:
 
 ```json
-"model_file_cache_gib": 30,
-"model_file_cache_shard": 0,
-"model_file_cache_headroom_gib": 6
+"model_file_cache_gib": 32,
+"model_file_cache_shard": 3,
+"model_file_cache_headroom_gib": 6,
+"model_file_cache_hot_unload": false
 ```
 
-The budget is in GiB (1024 cubed bytes). Zero or an absent budget disables the feature. Shard `0` selects the last
-shard of the GGUF named by `--native` or `--model`; `1`, `2`, etc. select a particular shard. An unsharded model is
-shard `1`. The server pins the selected file's prefix, up to the budget or file size, whichever is smaller; it does
-not spread the remaining budget to other shards. A different model uses its own filenames automatically. Whether
-a chosen prefix contains weights the loader uses depends on that model's file layout.
+The budget is in GiB (1024 cubed bytes). Zero or an absent budget disables the feature. Shard numbers match the
+GGUF filenames named by `--native` or `--model`: `1` selects `00001`, `3` selects `00003`; shard `0` is invalid.
+When the shard setting is absent, the default is **3**, matching the original Qwen3.8 Flash Next UD-IQ4_XS's
+three-shard layout; models with fewer shards use their last available shard.
+An unsharded model therefore uses its only file, shard **1**. An explicit shard must exist; it is never silently
+replaced by another number. The server pins **one file's prefix**, up to the budget or file size, whichever is
+smaller; it does not spread the remaining budget to other shards. A different model uses its own filenames
+automatically. Whether a chosen prefix contains weights the loader uses depends on that model's file layout.
 
-The equivalent server overrides are `--model-file-cache-gib 30 --model-file-cache-shard 0`. Settings changes take
+**Linux only.** macOS and Windows are not supported by this implementation. Although macOS has `mlock`, the
+memory-headroom checks here use Linux interfaces; no Mac performance or compatibility claim is made.
+
+The budget is configurable: **32 GiB is the size used in the example and tests, not a fixed cache size**.
+For example, with the three-shard **huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF, UD-IQ4_XS** model
+already on disk:
+
+```sh
+strata launch --model-path /models/huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf \
+  --model-file-cache-gib 32 --model-file-cache-shard 3 --model-file-cache-headroom-gib 6
+```
+
+In the **TUI**, open **Advanced**, filter for `model-file-cache`, and edit the budget, shard, headroom and hot-unload mode.
+Those choices are saved with the preset. `0` disables the budget; the default remains off. The same controls
+appear under **Model settings** in the server's **web UI** and are disabled on unsupported platforms.
+
+The equivalent server overrides are `--model-file-cache-gib 32 --model-file-cache-shard 3
+--model-file-cache-headroom-gib 6`. Settings changes take
 effect after a **server restart**, not `/unload` followed by `/load`. The pin fills before starting the engine,
-including lazy starts. A failed fill releases all pages and reports the error instead of claiming a working cache.
+including lazy starts. A failed allocation or memory lock releases all partial pins, logs a **warning**, and
+continues without the cache. It does not prevent model startup or unloading. Invalid settings and nonexistent
+shard choices are still configuration errors.
 
-The server needs a sufficient `RLIMIT_MEMLOCK` (for a systemd service, e.g. `LimitMEMLOCK=32212254720` for 30 GiB).
+**Optional hot-unload:** set `"model_file_cache_hot_unload": true` or add `--hot-unload`
+to the launch command above for the same Huihui Qwen3.8 Flash Next UD-IQ4_XS model. This flag is **off by default**.
+With a nonzero cache budget, it skips the startup fill. Each successful normal model unload (`/unload`, the
+web Unload button, or idle unload) releases the engine and vision resources, then fills and pins the selected
+shard's prefix. The unload waits for the fill; requests wait until it finishes. Busy unloads and unloads of an
+already unloaded model do not fill the cache. The pin stays in place while the next engine loads its arena.
+After the engine reports **READY**, the server unlocks and unmaps the cache. Those pages become reclaimable;
+Linux may retain them in its ordinary page cache until another allocation needs them. The next unload refills
+the pin. A failed model load keeps the pin for the next attempt.
+Stopping the Strata server never triggers a fill and always releases the pin. If a deferred fill fails, all partial
+locks are released, the model stays unloaded, and the failure is logged; a later load/unload can retry.
+Use `--no-hot-unload` or `false` to restore startup filling. The longer aliases are
+`--model-file-cache-hot-unload` / `--no-model-file-cache-hot-unload`. The measurements below used startup
+filling; hot-unload has not been benchmarked on that hardware.
+
+The server needs a sufficient `RLIMIT_MEMLOCK` (for a systemd service, e.g. `LimitMEMLOCK=34359738368` for 32 GiB).
 It never raises privileges or changes the system limit. The headroom is a fill-time check, not a reservation for the
 engine's later allocations. This cache is **additional** to the engine's RAM arena: allow space for both. Linux
 host memory and the current cgroup-v2 memory allowance are checked before filling. Stopping the server always
@@ -540,6 +579,29 @@ unlocks the pages; it does not evict them from the ordinary page cache.
 Buffered reads and file mappings can use these pages. `O_DIRECT` reads bypass them. No speedup is established by
 enabling the setting: compare startup times and physical disk reads on the same model and hardware. The initial
 fill still reads the chosen bytes from disk, and replacing the model files requires a server restart to pin the new files.
+
+**Measured example (4 November 2026): two SATA SSDs in RAID 0, Linux.** Tested with the Huihui Qwen3.8 Flash Next
+UD-IQ4_XS model named above, three GGUF shards totalling 93.68 GB, a 196608-token context, and RTX 5070 + two
+RTX 5060 Ti GPUs.
+Both groups used the same local integration build (`13edaba6`, based on upstream `ffa80d7`, engine 0.1.56).
+Five actual engine unload/reload cycles ran with the pin off, followed by five with a **configurable 32 GiB budget
+on shard 3**. Before each reload, only the SATA GGUF files received `POSIX_FADV_DONTNEED`; the locked pages stayed
+resident. No global cache drop was used. The initial server start and pin fill are excluded from the timed reloads.
+
+| Measurement | Cache off | 32 GiB on shard 3 |
+| --- | --- | --- |
+| Five load times, seconds | 175.9, 175.2, 174.3, 175.0, 174.2 | 121.0, 119.6, 142.6, 145.9, 175.8 |
+| Mean load time | 174.9 s | 141.0 s |
+| Mean physical RAID reads | 92.9 GB | 59.4 GB |
+| Expert-arena loading rate | 0.73 GiB/s in all five runs | 1.44, 1.47, 1.45, 1.46, 0.99 GiB/s |
+
+In this series, the pin reduced average reload time by 19% and RAID reads by 36%. Four effective arena-loading
+rates reached 1.44–1.47 GiB/s, comparable to one earlier NVMe-backed observation of 1.46 GiB/s. That rate combines
+RAM and disk reads; it is not the physical speed of the SATA drives or a matched NVMe/SATA startup comparison.
+The last cached run was as slow as the baseline, so the improvement is not guaranteed for every reload.
+The prepared pack, MTP and projector remained on NVMe (about 3–3.6 GB of ancillary NVMe reads per run).
+The two groups were sequential, not interleaved. These measurements show reload behavior on this setup, not a
+decode-speed improvement or results for other models, layouts, operating systems or storage devices.
 
 
 ### Streaming and tool calls

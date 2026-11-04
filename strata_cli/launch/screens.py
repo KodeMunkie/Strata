@@ -1416,6 +1416,11 @@ class AdvancedScreen(Base):
 
     def set_value(self, key: str, value: str) -> None:
         s = self.ctx.settings
+        try:
+            S.file_cache_overrides({**s.extra, key: value})
+        except ValueError as e:
+            self.say(str(e), True)
+            return
         s.extra[key] = value
         warn = P.check_name(key, self.ctx.engine_flags)
         self.ctx.invalidate_rows()

@@ -1,9 +1,12 @@
 """File selection, real small Linux locks, and server ownership without loading a model."""
 import ctypes
+import contextlib
+import io
 import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -31,21 +34,59 @@ class Configuration(unittest.TestCase):
     def test_shards_follow_model_and_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ('one-00001-of-00003.gguf', 'one-00003-of-00003.gguf', 'single.gguf'):
+            for name in ('one-00001-of-00003.gguf', 'one-00003-of-00003.gguf', 'single.gguf',
+                         'two-00002-of-00002.gguf'):
                 (root / name).write_bytes(b'model')
             cfg = {'cwd': tmp}
             args = ['--native', 'one-00001-of-00003.gguf']
-            self.assertEqual(cache.selected_file(cfg, args, 0), root / 'one-00003-of-00003.gguf')
+            self.assertEqual(cache.selected_file(cfg, args, None), root / 'one-00003-of-00003.gguf')
+            self.assertEqual(cache.selected_file(cfg, args, 3), root / 'one-00003-of-00003.gguf')
             self.assertEqual(cache.selected_file(cfg, args, 1), root / 'one-00001-of-00003.gguf')
             with self.assertRaises(ValueError):
                 cache.selected_file(cfg, args, 4)
+            with self.assertRaises(ValueError):
+                cache.selected_file(cfg, args, 0)
+            with self.assertRaises(ValueError):
+                runconfig.apply({}, {'model_file_cache_shard': 0})
             with self.assertRaises(FileNotFoundError):
                 cache.selected_file(cfg, args, 2)
-            self.assertEqual(cache.selected_file(cfg, ['--model', 'single.gguf'], 0), root / 'single.gguf')
+            self.assertEqual(cache.selected_file(cfg, ['--model', 'single.gguf'], None), root / 'single.gguf')
+            self.assertEqual(cache.selected_file(cfg, ['--model', 'two-00001-of-00002.gguf'], None),
+                             root / 'two-00002-of-00002.gguf')
 
     def test_non_linux_refuses_enabled_feature(self):
         with mock.patch.object(cache.sys, 'platform', 'win32'), self.assertRaisesRegex(ValueError, 'Linux'):
             cache.ModelFileCache().start({'model_file_cache_gib': 1}, [])
+
+    def test_hot_unload_is_boolean_and_defaults_off(self):
+        for value in ('true', 1, None):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'true or false'):
+                cache.settings({'model_file_cache_hot_unload': value})
+        cfg, changed = runconfig.apply({}, {'model_file_cache_hot_unload': True})
+        self.assertIs(cfg['model_file_cache_hot_unload'], True)
+        self.assertEqual(changed, ['model_file_cache_hot_unload'])
+        cfg, _ = runconfig.apply(cfg, {'model_file_cache_hot_unload': None})
+        self.assertNotIn('model_file_cache_hot_unload', cfg)
+        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'start') as start, \
+                mock.patch.object(cache, 'selected_file'):
+            pin.configure({'model_file_cache_gib': 1}, ['--native', 'unused.gguf'])
+            start.assert_called_once()
+
+    def test_disabled_cache_does_not_defer_or_touch_files(self):
+        with cache.ModelFileCache() as pin, mock.patch.object(cache, 'selected_file') as select:
+            pin.configure({'model_file_cache_hot_unload': True}, [])
+            pin.on_unload()
+            select.assert_not_called()
+
+    def test_web_controls_and_platform_validation(self):
+        fields = {k['key']: k for k in runconfig.view({}, 'model.json')['keys']}
+        self.assertEqual(fields['model_file_cache_hot_unload']['kind'], 'bool')
+        self.assertTrue(fields['model_file_cache_hot_unload']['linux_only'])
+        self.assertEqual(fields['model_file_cache_gib']['step'], 1)
+        with mock.patch.object(runconfig.sys, 'platform', 'darwin'):
+            self.assertEqual(runconfig.view({}, 'model.json')['platform'], 'darwin')
+            with self.assertRaisesRegex(ValueError, 'Linux'):
+                runconfig.apply({}, {'model_file_cache_gib': 32})
 
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux mlock')
@@ -55,6 +96,153 @@ class LinuxPin(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'weights.gguf'
         self.path.write_bytes(b'x' * 65536)
+
+    def service(self):
+        from serve.frontend import ChatTemplate
+        from serve.server import ByteTokenizer, Service
+        from serve.test_lifecycle import ResidentEngine
+        tok = ByteTokenizer()
+        return Service(ResidentEngine(tok), tok, ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
+
+    def test_hot_unload_fills_after_release_then_unlocks_after_arena_ready(self):
+        svc = self.service()
+        cfg = {'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
+               'model_file_cache_hot_unload': True}
+        with cache.ModelFileCache() as pin:
+            svc.model_file_cache = pin
+            pin.configure(cfg, ['--native', str(self.path)])
+            self.assertIsNone(pin.address)
+            self.assertEqual(svc.unload(), 'not loaded')
+            self.assertIsNone(pin.address)
+            svc.engine.restart()
+            svc.vision = mock.Mock()
+            svc.vision.unload.side_effect = lambda: self.assertFalse(svc.engine.alive())
+            vision = svc.vision
+            real_start = pin.start
+            def start(*args):
+                self.assertFalse(svc.engine.alive())
+                self.assertGreaterEqual(vision.unload.call_count, 1)
+                self.assertFalse(svc.fifo.acquire(blocking=False))
+                real_start(*args)
+            with mock.patch.object(pin, 'start', side_effect=start) as fill:
+                svc.status['busy'] = 1
+                self.assertEqual(svc.unload(), 'busy')
+                fill.assert_not_called()
+                svc.status['busy'] = 0
+                self.assertEqual(svc.unload(), 'unloaded')
+                address = pin.address
+                self.assertIsNotNone(address)
+                svc.vision = None
+                restart = svc.engine.restart
+                def load_arena():
+                    self.assertEqual(pin.address, address)  # still pinned while the arena reads it
+                    restart()
+                with mock.patch.object(svc.engine, 'restart', side_effect=load_arena):
+                    svc.load()
+                self.assertIsNone(pin.address)
+                self.assertEqual(pin.length, 0)
+                self.assertEqual(svc.unload(idle_for=0), 'unloaded')
+                self.assertIsNotNone(pin.address)
+                self.assertEqual(fill.call_count, 2)
+        self.assertIsNone(pin.address)
+
+    def test_startup_and_unload_allocation_failure_warn_and_continue(self):
+        for hot in (False, True):
+            with self.subTest(hot=hot), cache.ModelFileCache() as pin:
+                svc = self.service()
+                svc.model_file_cache = pin
+                svc.engine.restart()
+                cfg = {'model_file_cache_gib': 1, 'model_file_cache_hot_unload': hot}
+                output = io.StringIO()
+                with mock.patch.object(cache, 'available_bytes', return_value=0), \
+                        contextlib.redirect_stdout(output):
+                    pin.configure(cfg, ['--native', str(self.path)])
+                    self.assertEqual(svc.unload(), 'unloaded')
+                self.assertIn('WARNING: model file cache unavailable', output.getvalue())
+                self.assertIsNone(pin.address)
+                self.assertEqual(pin.length, 0)
+                svc.load()  # warning did not break the model lifecycle
+
+    def test_failed_arena_load_keeps_pin_for_retry(self):
+        svc = self.service()
+        with cache.ModelFileCache() as pin:
+            svc.model_file_cache = pin
+            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
+                           'model_file_cache_hot_unload': True}, ['--native', str(self.path)])
+            svc.engine.restart()
+            svc.unload()
+            address = pin.address
+            with mock.patch.object(svc.engine, 'restart', side_effect=RuntimeError('load failed')), \
+                    self.assertRaises(RuntimeError):
+                svc.load()
+            self.assertEqual(pin.address, address)
+            svc.load()
+            self.assertIsNone(pin.address)
+
+    def test_default_startup_pin_is_kept_after_load_and_unload(self):
+        svc = self.service()
+        with cache.ModelFileCache() as pin:
+            svc.model_file_cache = pin
+            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0},
+                          ['--native', str(self.path)])
+            address = pin.address
+            self.assertIsNotNone(address)
+            svc.load()
+            self.assertEqual(pin.address, address)
+            svc.unload()
+            self.assertEqual(pin.address, address)
+
+    def test_hot_unload_failure_releases_partial_pin_and_can_retry(self):
+        cfg = {'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
+               'model_file_cache_hot_unload': True}
+        with cache.ModelFileCache() as pin:
+            pin.configure(cfg, ['--native', str(self.path)])
+            with mock.patch.object(cache, 'available_bytes', return_value=0):
+                pin.on_unload()
+            self.assertIsNone(pin.address)
+            self.assertEqual(pin.length, 0)
+            pin.on_unload()
+            self.assertIsNotNone(pin.address)
+
+    def test_server_exit_cancels_deferred_fill(self):
+        pin = cache.ModelFileCache()
+        with pin, mock.patch.object(pin, 'start') as start:
+            pin.configure({'model_file_cache_gib': 1, 'model_file_cache_hot_unload': True},
+                          ['--native', str(self.path)])
+        pin.on_unload()  # an idle worker after shutdown must not create a new pin
+        start.assert_not_called()
+        self.assertIsNone(pin.address)
+
+    def test_shutdown_waits_for_an_in_progress_fill_then_unlocks(self):
+        pin = cache.ModelFileCache()
+        pin.configure({'model_file_cache_gib': 1, 'model_file_cache_headroom_gib': 0,
+                       'model_file_cache_hot_unload': True}, ['--native', str(self.path)])
+        filling, release, closed = threading.Event(), threading.Event(), threading.Event()
+        real_start = pin.start
+        def start(*args):
+            filling.set()
+            if not release.wait(5):
+                raise ValueError('test fill timed out')
+            real_start(*args)
+        def close():
+            pin.close()
+            closed.set()
+        with mock.patch.object(pin, 'start', side_effect=start):
+            worker = threading.Thread(target=pin.on_unload)
+            closer = threading.Thread(target=close)
+            worker.start()
+            try:
+                self.assertTrue(filling.wait(2))
+                closer.start()
+                self.assertFalse(closed.wait(0.05))
+            finally:
+                release.set()
+                worker.join(5)
+                if closer.ident is not None:
+                    closer.join(5)
+                pin.close()
+            self.assertTrue(closed.is_set())
+            self.assertIsNone(pin.address)
 
     def test_real_prefix_stays_locked_then_releases(self):
         import resource

@@ -516,9 +516,21 @@ prefix is intended to use less RAM than retaining the full expert arena;
 the actual saving depends on the shard size, budget and model layout.
 
 It belongs to the **server**: with the cache enabled, the default fills it at server startup and keeps it pinned
-for the server's lifetime. `/unload` and idle unload leave it resident until server exit.
-The optional hot-unload mode releases the pin after each reload instead. It is not a
-tensor cache and needs no model-specific weight offsets.
+for the server's lifetime, including across `/unload` and idle unload. If lifetime pinning is undesirable, add
+`--hot-unload`: the cache fills only on a successful model unload, after the arena and GPU resources have been
+released, and its RAM pin is released when the arena is reloaded later. This is less desirable for repeated
+unload/reload performance because it slows unloading and adds a cache-fill pass over the selected shard (or
+budgeted prefix) on each cycle, potentially reading those bytes from storage again. Pages still in the OS cache
+can be reused. It is not a tensor cache and needs no model-specific weight offsets.
+
+**Why ordinary OS file caching is not enough:** Linux already caches buffered model-file reads, and reloads can
+benefit while those pages remain resident. Those ordinary file-cache pages are reclaimable, however: RAM pressure,
+including allocation of the model's arena, can evict them. Freeing the arena on unload does not automatically
+read evicted file pages back into RAM. This feature maps the same OS file-cache pages and uses `mlock` to keep
+the selected range resident until its pin is released. It makes retention predictable for that range; it may add
+little benefit when the ordinary cache already retains those bytes. See the Linux documentation on
+[page cache and reclaim](https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html#page-cache) and
+[`mlock`](https://man7.org/linux/man-pages/man2/mlock.2.html).
 
 Set these keys outside `args` in the run config, or edit them in the web page's Model settings:
 
@@ -575,6 +587,9 @@ to the launch command above for the same Huihui Qwen3.8 Flash Next UD-IQ4_XS mod
 It is for users who prefer to release the permanent file-cache pin while the model is loaded: it keeps some
 model data **hot despite unloading** the full arena and GPU resources, with the intent of using less RAM while
 the model is unloaded and making its next load quicker.
+Lifetime pinning avoids repeated fills and is the preferred mode for repeated reloads. Hot-unload trades that
+for releasing the pin while the model is loaded: each unload waits for an extra shard/prefix cache-fill pass,
+which may need another storage read if the OS has evicted those pages.
 With a nonzero cache budget, it skips the startup fill. Each successful normal model unload (`/unload`, the
 web Unload button, or idle unload) releases the engine and vision resources, then fills and pins the selected
 shard's prefix. The unload waits for the fill; requests wait until it finishes. Busy unloads and unloads of an

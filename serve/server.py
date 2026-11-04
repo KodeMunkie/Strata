@@ -9638,7 +9638,8 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, cach
     except ValueError as exc:
         ap.error(str(exc))
     if a.engine == "mock" and cfg.get("shard_cache_gib"):
-        print("[strata] NOTE: shard cache is ignored by --engine mock; no model file is pinned", flush=True)
+        print("[strata] NOTE: shard cache is ignored by --engine mock; no model file is pinned "
+              "and shard selection is not validated", flush=True)
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)

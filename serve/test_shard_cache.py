@@ -96,6 +96,39 @@ class Configuration(unittest.TestCase):
         with mock.patch.object(cache.sys, 'platform', 'win32'), self.assertRaisesRegex(ValueError, 'Linux'):
             cache.ShardCache().start({'shard_cache_gib': 1}, [])
 
+    def test_shard_separator_case_is_preserved(self):
+        for separator in ('-OF-', '-Of-', '-oF-'):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                first = root / f'MixedCase-Model-00001{separator}00003.GGUF'
+                third = root / f'MixedCase-Model-00003{separator}00003.GGUF'
+                first.write_bytes(b'first')
+                third.write_bytes(b'third')
+                args = ['--native', first.name]
+                for shard, expected in ((None, third), (1, first), (3, third)):
+                    with self.subTest(separator=separator, shard=shard):
+                        self.assertEqual(cache.selected_file({'cwd': tmp}, args, shard), expected)
+                with self.subTest(separator=separator, shard=4), self.assertRaisesRegex(ValueError, 'has 3 shard'):
+                    cache.selected_file({'cwd': tmp}, args, 4)
+
+    def test_non_linux_startup_warns_and_skips_saved_cache_settings(self):
+        for platform in ('darwin', 'win32'):
+            for hot in (False, True):
+                with self.subTest(platform=platform, hot=hot), cache.ShardCache() as pin:
+                    output = io.StringIO()
+                    with mock.patch.object(cache.sys, 'platform', platform), \
+                            mock.patch.object(cache, 'selected_file') as select, \
+                            mock.patch.object(pin, 'start') as fill, contextlib.redirect_stdout(output):
+                        pin.configure({'shard_cache_gib': 32, 'shard_cache_shard': 3,
+                                       'shard_cache_hot_unload': hot}, [])
+                        pin.on_unload()
+                        pin.on_load()
+                    self.assertIn('WARNING', output.getvalue())
+                    self.assertIn('Linux only', output.getvalue())
+                    select.assert_not_called()
+                    fill.assert_not_called()
+                    self.assertIsNone(pin.address)
+
     def test_hot_unload_is_boolean_and_defaults_off(self):
         for value in ('true', 1, None):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'true or false'):
@@ -141,8 +174,10 @@ class Configuration(unittest.TestCase):
                     mock.patch.object(server, 'split_joined_args', side_effect=RuntimeError('stop before startup')), \
                     mock.patch.object(cache.ShardCache, 'configure') as configure, \
                     contextlib.redirect_stdout(output), self.assertRaisesRegex(RuntimeError, 'stop before startup'):
-                server.main(['--engine', 'mock', '--shard-cache-gib', budget])
+                server.main(['--engine', 'mock', '--shard-cache-gib', budget, '--shard-cache-shard', '5'])
             self.assertEqual('shard cache is ignored by --engine mock' in output.getvalue(), budget == 'auto')
+            if budget == 'auto':
+                self.assertIn('shard selection is not validated', output.getvalue())
             configure.assert_not_called()
 
 

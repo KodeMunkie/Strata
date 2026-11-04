@@ -569,10 +569,11 @@ GGUF filenames named by `--native` or `--model`: `1` selects `00001`, `3` select
 When the shard setting is absent, the default is **3**, matching the original Qwen3.8 Flash Next UD-IQ4_XS's
 three-shard layout; models with fewer shards use their last available shard.
 An unsharded model therefore uses its only file, shard **1**. An explicit shard must exist; it is never silently
-replaced by another number. GGUF suffix matching is case-insensitive, and shard selection preserves the original
-filename and suffix case. The server pins **one file's prefix**, up to the budget or file size, whichever is
-smaller; it does not spread the remaining budget to other shards. A different model uses its own filenames
-automatically. Whether a chosen prefix contains weights the loader uses depends on that model's file layout.
+replaced by another number. GGUF suffixes and the `-of-` separator are matched case-insensitively. Shard selection
+preserves the original model-name prefix, separator and suffix case. The server pins **one file's prefix**, up
+to the budget or file size, whichever is smaller; it does not spread the remaining budget to other shards.
+A different model uses its own filenames automatically. Whether a chosen prefix contains weights the loader
+uses depends on that model's file layout.
 
 Set `"shard_cache_gib": "auto"` or `--shard-cache-gib auto` to use the selected shard's **entire file
 size**, rather than a fixed GiB budget. This includes only that one shard. For the Huihui Qwen3.8 Flash Next
@@ -585,7 +586,12 @@ memory-lock allowance. The model still loads or unloads normally.
 
 **Linux only.** macOS and Windows are not supported by this implementation. Although macOS has `mlock`, the
 memory-headroom checks here use Linux interfaces; no Mac performance or compatibility claim is made.
-The mock engine ignores an enabled shard cache and prints a startup notice; it does not pin a model file.
+At server startup, saved cache settings are ignored with a warning on unsupported platforms, so a Linux-saved
+cache budget does not block startup there. The web controls remain disabled and API updates cannot enable the
+feature on those platforms; clearing saved settings is allowed.
+The mock engine ignores an enabled shard cache and prints a startup notice; it neither pins model files nor
+validates the selected shard. On Linux, the real Strata engine validates the file and shard when configuring
+its enabled cache.
 
 The budget is configurable: **32 GiB is the size used in the example and tests, not a fixed cache size**.
 For example, with the three-shard **huihui-ai/Huihui-Qwen3.8-Flash-Next-abliterated-v2-GGUF, UD-IQ4_XS** model

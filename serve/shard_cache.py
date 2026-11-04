@@ -54,13 +54,13 @@ def selected_file(cfg, args, shard):
         path = Path(cfg.get("cwd") or ".") / path
     if path.suffix.lower() != ".gguf":
         raise ValueError("shard cache supports GGUF files only")
-    match = re.fullmatch(r"(.*)-(\d{5})-of-(\d{5})", path.stem)
-    count = int(match[3]) if match else 1
+    match = re.fullmatch(r"(.*)-(\d{5})(-[oO][fF]-)(\d{5})", path.stem)
+    count = int(match[4]) if match else 1
     number = min(DEFAULT_SHARD, count) if shard is None else shard
     if not 1 <= number <= count:
         raise ValueError(f"shard_cache_shard: model has {count} shard(s), requested {number}")
     if match:
-        path = path.with_name(f"{match[1]}-{number:05d}-of-{count:05d}{path.suffix}")
+        path = path.with_name(f"{match[1]}-{number:05d}{match[3]}{count:05d}{path.suffix}")
     return path.resolve(strict=True)
 
 
@@ -109,7 +109,9 @@ class ShardCache:
         if not budget:
             return
         if not sys.platform.startswith('linux'):
-            raise ValueError('shard cache is currently supported on Linux only')
+            print('[strata] WARNING: shard cache is supported on Linux only; '
+                  'ignoring the cache settings and continuing without a pin', flush=True)
+            return
         selected_file(cfg, args, shard)  # bad filenames/shard choices are configuration errors, not RAM failures
         if cfg.get('shard_cache_hot_unload', False):
             self._deferred = (dict(cfg), list(args))

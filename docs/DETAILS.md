@@ -523,8 +523,11 @@ unload/reload performance because it slows unloading and adds a cache-fill pass 
 budgeted prefix) on each cycle, potentially reading those bytes from storage again. Pages still in the OS cache
 can be reused. It is not a tensor cache and needs no model-specific weight offsets.
 
-**Uses Linux's own filesystem caching and pinning facilities.** A shared file mapping (`mmap` with `MAP_SHARED`)
-accesses the existing Linux page cache, and `mlock` keeps the selected pages resident. Linux manages the cached
+**Uses Linux's own filesystem caching and pinning facilities.** Enable it with Strata's
+`--model-file-cache-gib` setting, optionally adding `--hot-unload`. Strata's server then calls the Linux
+`mmap()` and `mlock()` system calls internally; these names describe its implementation, not additional
+command-line options the user needs to supply. A shared file mapping (`mmap()` with `MAP_SHARED`)
+accesses the existing Linux page cache, and `mlock()` keeps the selected pages resident. Linux manages the cached
 file data; Strata adds the choice of shard, byte budget and pin lifetime. A file-cache page is a fixed-size unit
 of RAM holding a portion of a file, so a large shard spans many pages. The implementation queries the OS page
 size rather than assuming one.

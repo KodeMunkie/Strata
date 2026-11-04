@@ -24,10 +24,20 @@ class Configuration(unittest.TestCase):
 
     def test_settings_roundtrip_and_rejection(self):
         cfg, _ = runconfig.apply({}, {'model_file_cache_gib': 30, 'model_file_cache_shard': 3})
-        self.assertEqual(cache.settings(cfg), (30, 3, 6))
+        self.assertEqual(cache.settings(cfg), (30, 3, 8))
         cfg, _ = runconfig.apply(cfg, {'model_file_cache_gib': None})
         self.assertEqual(cache.settings(cfg)[0], 0)
         for value in (-1, True, 1.5, '30', float('nan'), float('inf'), 65537):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                runconfig.apply({}, {'model_file_cache_gib': value})
+
+    def test_auto_budget_roundtrips_and_remains_opt_in(self):
+        cfg, changed = runconfig.apply({}, {'model_file_cache_gib': 'auto'})
+        self.assertEqual(cache.settings(cfg), ('auto', None, 8))
+        self.assertEqual(changed, ['model_file_cache_gib'])
+        self.assertEqual(cache.budget_arg('auto'), 'auto')
+        self.assertEqual(cache.budget_arg('32'), 32)
+        for value in ('all', 'auto:32', 'AUTO'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 runconfig.apply({}, {'model_file_cache_gib': value})
 
@@ -83,6 +93,7 @@ class Configuration(unittest.TestCase):
         self.assertEqual(fields['model_file_cache_hot_unload']['kind'], 'bool')
         self.assertTrue(fields['model_file_cache_hot_unload']['linux_only'])
         self.assertEqual(fields['model_file_cache_gib']['step'], 1)
+        self.assertEqual(fields['model_file_cache_gib']['kind'], 'cache_budget')
         with mock.patch.object(runconfig.sys, 'platform', 'darwin'):
             self.assertEqual(runconfig.view({}, 'model.json')['platform'], 'darwin')
             with self.assertRaisesRegex(ValueError, 'Linux'):
@@ -96,6 +107,65 @@ class LinuxPin(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'weights.gguf'
         self.path.write_bytes(b'x' * 65536)
+        # Real locks remain tiny; lifecycle tests must not depend on the machine's live RAM workload.
+        available = mock.patch.object(cache, 'available_bytes', return_value=128 * cache.GIB)
+        available.start()
+        self.addCleanup(available.stop)
+
+    def test_auto_pins_only_selected_file_and_enforces_eight_gib_headroom(self):
+        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'pin') as lock:
+            pin.start({'model_file_cache_gib': 'auto', 'model_file_cache_headroom_gib': 0},
+                      ['--native', str(self.path)])
+            lock.assert_called_once_with(self.path, self.path.stat().st_size, 8 * cache.GIB)
+        with cache.ModelFileCache() as pin, mock.patch.object(pin, 'pin') as lock:
+            pin.start({'model_file_cache_gib': 'auto', 'model_file_cache_headroom_gib': 12},
+                      ['--native', str(self.path)])
+            lock.assert_called_once_with(self.path, self.path.stat().st_size, 12 * cache.GIB)
+
+    def test_auto_failure_warns_with_smaller_budget_in_both_modes(self):
+        import resource
+        cfg = {'model_file_cache_gib': 'auto'}
+        for hot in (False, True):
+            with self.subTest(hot=hot), cache.ModelFileCache() as pin:
+                output = io.StringIO()
+                with mock.patch.object(cache, 'available_bytes', return_value=40 * cache.GIB), \
+                        mock.patch('resource.getrlimit', return_value=(resource.RLIM_INFINITY, resource.RLIM_INFINITY)), \
+                        mock.patch.object(Path, 'stat', return_value=mock.Mock(st_size=48 * cache.GIB)), \
+                        mock.patch.object(pin, 'pin', side_effect=MemoryError('allocation refused')), \
+                        contextlib.redirect_stdout(output):
+                    pin.configure({**cfg, 'model_file_cache_hot_unload': hot}, ['--native', str(self.path)])
+                    if hot:
+                        pin.on_unload()
+                self.assertIn('WARNING', output.getvalue())
+                self.assertIn('--model-file-cache-gib 32', output.getvalue())
+                self.assertIn('at least 8 GiB', output.getvalue())
+                self.assertIsNone(pin.address)
+
+    def test_suggestion_respects_lock_limit_and_larger_headroom(self):
+        args = ['--native', str(self.path)]
+        with mock.patch.object(cache, 'available_bytes', return_value=40 * cache.GIB), \
+                mock.patch('resource.getrlimit', return_value=(20 * cache.GIB, 20 * cache.GIB)), \
+                mock.patch.object(Path, 'stat', return_value=mock.Mock(st_size=48 * cache.GIB)):
+            suggestion = cache.ModelFileCache._suggestion({'model_file_cache_gib': 'auto',
+                                                           'model_file_cache_headroom_gib': 24}, args)
+            self.assertIn('--model-file-cache-gib 16', suggestion)
+            self.assertIn('24 GiB', suggestion)
+        with mock.patch.object(cache, 'available_bytes', return_value=8 * cache.GIB):
+            suggestion = cache.ModelFileCache._suggestion({'model_file_cache_gib': 'auto'}, args)
+            self.assertIn('--model-file-cache-gib 0', suggestion)
+
+    def test_auto_real_pin_is_released_after_hot_reload(self):
+        svc = self.service()
+        with cache.ModelFileCache() as pin:
+            svc.model_file_cache = pin
+            pin.configure({'model_file_cache_gib': 'auto', 'model_file_cache_hot_unload': True},
+                          ['--native', str(self.path)])
+            svc.load()
+            self.assertIsNone(pin.address)
+            svc.unload()
+            self.assertEqual(pin.length, self.path.stat().st_size)
+            svc.load()
+            self.assertIsNone(pin.address)
 
     def service(self):
         from serve.frontend import ChatTemplate

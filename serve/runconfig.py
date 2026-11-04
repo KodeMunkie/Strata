@@ -34,12 +34,12 @@ EDITABLE = [
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
-    ("model_file_cache_gib", "int>=0", "Linux: pin up to this many GiB of a GGUF shard in RAM across engine unloads "
-     "(0 or empty: off; hot-unload releases after the next arena load; requires enough RAM and a memory-lock allowance)"),
+    ("model_file_cache_gib", "cache_budget", "Keep part of a model in RAM for quicker reloads; particularly useful "
+     "with spare RAM and limited VRAM. Linux only. GiB budget or auto for one whole shard; 0 disables it."),
     ("model_file_cache_shard", "int>=0", "One GGUF shard: 1 is first, 3 is third (empty: 3, or last available if fewer; 0 is invalid)"),
     ("model_file_cache_hot_unload", "bool", "Fill the file cache on normal model unload, release its pin after the "
      "next arena load (off or empty: fill at startup and retain until server exit). Unload waits for the fill."),
-    ("model_file_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the file cache (empty: 6 GiB; "
+    ("model_file_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the file cache (default/minimum: 8 GiB; "
      "does not include RAM the engine will allocate afterward)"),
     ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
                     "empty or on: as installed"),

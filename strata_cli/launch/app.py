@@ -179,7 +179,8 @@ class Ctx:
         # Server-owned options also belong in Advanced, including before an engine is installed.
         for key, default, label, description in S.FILE_CACHE_OPTIONS:
             value = (cfg or {}).get(key, default)
-            switches.append(P.Param(name="--" + key.replace("_", "-"), kind="flag", metavar="on|off" if isinstance(default, bool) else "N",
+            metavar = "on|off" if isinstance(default, bool) else "N|auto" if key == "model_file_cache_gib" else "N"
+            switches.append(P.Param(name="--" + key.replace("_", "-"), kind="flag", metavar=metavar,
                                     help_default=("on" if value else "off") if isinstance(default, bool) else str(value),
                                     values=["on", "off"] if isinstance(default, bool) else [],
                                     description=label, full=description))

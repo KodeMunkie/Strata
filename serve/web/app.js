@@ -661,10 +661,10 @@ async function loadConfig() {
       const text = v == null ? "" : Array.isArray(v) ? v.join(", ") : String(v);
       input = `<input class="st-input" id="${id}" ${k.kind === "number" ? `type="number" step="${k.step || 'any'}" min="0"` : 'type="text"'} ` +
         `${k.linux_only && c.platform !== 'linux' ? 'disabled title="Linux only; macOS and Windows are not supported"' : ''} ` +
-        `value="${esc(text)}" placeholder="default" autocomplete="off">`;
+        `value="${esc(text)}" placeholder="${k.kind === 'cache_budget' ? '0 (off), GiB, or auto (whole shard)' : 'default'}" autocomplete="off">`;
     }
     const note = k.key === "model_file_cache_gib"
-      ? '<p class="muted small" style="grid-column:1/-1">Model file cache: Linux only, off by default. Caches one numbered shard; default 3, or the last available if fewer. Choose the RAM budget; 32 GiB is an example. Normally retained from server startup until exit. Hot-unload fills after model unload and releases the pin after the next arena load. Allocation failures warn and continue. Restart the server after changing these settings.</p>' : '';
+      ? `<p class="muted small" style="grid-column:1/-1">${esc(k.help)} Normally retained from startup until server exit. Hot-unload fills after releasing the arena/GPU and releases its pin after the next arena load. Keeps at least 8 GiB for the OS. Allocation failures warn and suggest a budget. Restart the server after changes.</p>` : '';
     return note + `<label for="${id}" title="${esc(k.help)}">${esc(k.label || k.help)}<code>${esc(k.key)}</code></label>${input}`;
   }).join("");
   $("cfg-card").hidden = false;
@@ -673,6 +673,11 @@ function configValue(k, el) {
   const s = el.value.trim();
   if (s === "") return null;
   if (k.kind === "bool") return s === "true";
+  if (k.kind === "cache_budget") {
+    if (s.toLowerCase() === "auto") return "auto";
+    const n = Number(s);
+    return Number.isFinite(n) ? n : s;               // invalid input reaches validation, never JSON null/default
+  }
   if (k.kind === "number") return Number(s);
   return s;                                         // enum, or names (the server splits them at commas)
 }

@@ -12,6 +12,12 @@ import threading
 GIB = 1 << 30
 LOCK_CHUNK = 256 << 20
 DEFAULT_SHARD = 3  # Qwen3.8 Flash Next UD-IQ4_XS: third shard, or last available for smaller layouts
+MIN_HEADROOM_GIB = 8
+
+
+def budget_arg(value):
+    """CLI convention: a whole GiB budget or the word auto."""
+    return 'auto' if value.strip().lower() == 'auto' else int(value)
 
 
 def settings(cfg):
@@ -19,14 +25,18 @@ def settings(cfg):
         raise ValueError('model_file_cache_hot_unload: expected true or false')
     values = []
     for key, default in (("model_file_cache_gib", 0), ("model_file_cache_shard", None),
-                         ("model_file_cache_headroom_gib", 6)):
+                         ("model_file_cache_headroom_gib", MIN_HEADROOM_GIB)):
         value = cfg.get(key, default)
+        if key == 'model_file_cache_gib' and value == 'auto':
+            values.append(value)
+            continue
         if key == 'model_file_cache_shard' and key not in cfg:
             values.append(None)  # default resolved against this model's shard count, never a numeric sentinel
             continue
         minimum = 1 if key == 'model_file_cache_shard' else 0
         if type(value) is not int or not minimum <= value <= 65536:
-            raise ValueError(f"{key}: expected a whole number in {minimum}..65536")
+            suffix = ' or auto' if key == 'model_file_cache_gib' else ''
+            raise ValueError(f"{key}: expected a whole number in {minimum}..65536{suffix}")
         values.append(value)
     return tuple(values)
 
@@ -93,7 +103,34 @@ class ModelFileCache:
             self.start(cfg, args)
         except (OSError, ValueError, MemoryError) as exc:
             self._release()
-            print(f'[strata] WARNING: model file cache unavailable; continuing without a pin: {exc}', flush=True)
+            print(f'[strata] WARNING: model file cache unavailable; continuing without a pin: {exc}. '
+                  + self._suggestion(cfg, args), flush=True)
+
+    @staticmethod
+    def _suggestion(cfg, args):
+        """Estimate a usable budget after failure; never retry or claim to reserve future arena RAM."""
+        try:
+            import resource
+            _, shard, headroom = settings(cfg)
+            reserve = max(MIN_HEADROOM_GIB, headroom)
+            room = max(0, available_bytes() - reserve * GIB)
+            soft, _ = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+            if soft != resource.RLIM_INFINITY:
+                room = min(room, max(0, soft))
+            size = selected_file(cfg, args, shard).stat().st_size
+            page = os.sysconf('SC_PAGE_SIZE')
+            locked = (size + page - 1) // page * page
+            budget = (size + GIB - 1) // GIB if room >= locked else room // GIB
+            if budget:
+                return (f'Current RAM and memory-lock limits suggest --model-file-cache-gib {budget}, '
+                        f'leaving at least {reserve} GiB available to the OS. This is a fill-time estimate; '
+                        'also allow RAM for the model arena during reload.')
+            return (f'No whole-GiB cache budget fits the current RAM/memory-lock allowance while leaving '
+                    f'{reserve} GiB to the OS; use --model-file-cache-gib 0 to disable the cache, '
+                    'free RAM or increase the memory-lock allowance.')
+        except (OSError, ValueError, MemoryError):
+            return ('Could not estimate a smaller budget; use --model-file-cache-gib 0 to disable the cache. '
+                    'Leave at least 8 GiB available to the OS, plus RAM for the arena during reload.')
 
     def on_unload(self):
         """Called after engine/vision RAM is released, under the service's request lock."""
@@ -116,7 +153,9 @@ class ModelFileCache:
         if not sys.platform.startswith('linux'):
             raise ValueError('model file cache is currently supported on Linux only')
         path = selected_file(cfg, args, shard)
-        self.pin(path, min(budget * GIB, path.stat().st_size), headroom * GIB)
+        size = path.stat().st_size
+        length = size if budget == 'auto' else min(budget * GIB, size)
+        self.pin(path, length, max(MIN_HEADROOM_GIB, headroom) * GIB)
 
     def pin(self, path, length, headroom):
         import resource

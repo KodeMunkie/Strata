@@ -9517,12 +9517,12 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
-    ap.add_argument("--model-file-cache-gib", type=int, default=None,
-                    help="Linux: pin this many GiB of a model shard in RAM until the server exits (0: off)")
+    ap.add_argument("--model-file-cache-gib", type=model_file_cache.budget_arg, default=None, metavar="N|auto",
+                    help="Linux: pin N GiB or auto for the entire selected shard (0: off; keep at least 8 GiB for the OS)")
     ap.add_argument("--model-file-cache-shard", type=int, default=None,
                     help="model shard number to pin, matching its filename (1-based; default: 3, or last available if fewer)")
     ap.add_argument("--model-file-cache-headroom-gib", type=int, default=None,
-                    help="Linux: available RAM to leave while filling the model file cache (default 6 GiB)")
+                    help="Linux: available RAM to leave while filling the model file cache (default/minimum 8 GiB)")
     ap.add_argument("--model-file-cache-hot-unload", "--hot-unload", action=argparse.BooleanOptionalAction, default=None,
                     help="fill the cache on model unload, release it after the next arena load (default: off)")
     ap.add_argument("--host", default=None,

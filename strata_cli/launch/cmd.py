@@ -100,6 +100,8 @@ def add_parsers(sp: argparse._SubParsersAction) -> list[argparse.ArgumentParser]
     g.add_argument("--parallel", type=_parallel, metavar="N", help="requests answered at the same time, 1 to 8 (default: fit to your graphics card)")
     for key, default, label, description in S.FILE_CACHE_OPTIONS:
         kind = {"action": argparse.BooleanOptionalAction} if isinstance(default, bool) else {"type": int, "metavar": "N"}
+        if key == "model_file_cache_gib":
+            kind = {"type": str, "metavar": "N|auto"}
         flags = ["--" + key.replace("_", "-")]
         if key == "model_file_cache_hot_unload":
             flags.append("--hot-unload")

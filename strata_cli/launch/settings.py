@@ -64,11 +64,12 @@ KV_MODES = ("int8", "q4_0", "k8v4", "fp16")
 DEFAULT_PORT = 8080
 FILE_CACHE_OPTIONS = (
     ("model_file_cache_gib", 0, "Model file cache (GiB)",
-     "Linux only: RAM retained across model unloads for faster reloads. 0 disables it; the size is configurable."),
+     "Keep part of a model in RAM for quicker reloads; particularly useful with spare RAM and limited VRAM. "
+     "Linux only. GiB budget or auto for one whole shard; 0 disables it."),
     ("model_file_cache_shard", 3, "Model file cache shard",
      "One GGUF shard matching its filename: 1 is first, 3 is third. Default 3, or the last available if fewer. 0 is invalid."),
-    ("model_file_cache_headroom_gib", 6, "File cache RAM headroom (GiB)",
-     "Available RAM to leave while filling the cache; allow additional RAM for the model arena."),
+    ("model_file_cache_headroom_gib", 8, "File cache RAM headroom (GiB)",
+     "Available RAM to leave while filling the cache, with an enforced minimum of 8 GiB; also allow RAM for the arena."),
     ("model_file_cache_hot_unload", False, "Hot-unload file cache",
      "Fill on model unload, release after the next arena load. Off by default: fill at server startup and retain until exit."),
 )
@@ -82,6 +83,9 @@ def file_cache_overrides(extra: dict) -> dict:
         if flag not in extra or extra[flag] == "":
             continue
         raw = str(extra[flag]).strip()
+        if key == 'model_file_cache_gib' and raw.lower() == 'auto':
+            out[key] = 'auto'
+            continue
         if key == "model_file_cache_hot_unload":
             if raw.lower() not in ("on", "off", "true", "false", "1", "0"):
                 raise ValueError(f"{flag}: use on or off")

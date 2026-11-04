@@ -908,6 +908,17 @@ class FlagsCommand(unittest.TestCase):
         code, out, err = run_cli(['launch', '--plan', '--model-file-cache-shard', '0'])
         self.assertNotEqual(code, 0)
 
+    def test_file_cache_auto_is_planned_saved_and_server_owned(self):
+        p = self.plan('--model-file-cache-gib', 'auto', '--model-file-cache-shard', '3')
+        self.assertEqual(S.file_cache_overrides(p['settings']['extra'])['model_file_cache_gib'], 'auto')
+        self.assertIn('--model-file-cache-gib auto', p['flags'])
+        settings = S.LaunchSettings(name='Auto cache', extra=p['settings']['extra'])
+        store.save(settings)
+        self.assertEqual(store.load('Auto cache').extra, settings.extra)
+        cfg = derive_config(RunConfig.BASE, settings, bool_flags=frozenset())
+        self.assertEqual(cfg['model_file_cache_gib'], 'auto')
+        self.assertEqual(cfg['args'], RunConfig.BASE['args'])
+
     def test_vision_help_says_the_picture_rule(self):
         code, out, err = run_cli(["launch", "--help"])
         text = " ".join(out.split())

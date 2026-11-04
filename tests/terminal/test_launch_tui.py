@@ -580,6 +580,9 @@ class AdvancedStep(Base):
             self.assertIs(S.file_cache_overrides(ctx.settings.extra)['model_file_cache_hot_unload'], True)
             self.assertIn('--model-file-cache-gib 32', S.flags_text(ctx.settings))
             self.assertNotIn('--model-file-cache-gib', ctx.command_text())  # server flags never reach the engine
+            screen.set_value('--model-file-cache-gib', 'auto')
+            self.assertEqual(S.file_cache_overrides(ctx.settings.extra)['model_file_cache_gib'], 'auto')
+            self.assertIn('--model-file-cache-gib auto', S.flags_text(ctx.settings))
         self.run_app(case, ctx=ctx)
 
     def ctx_with_engine(self):

@@ -507,6 +507,41 @@ applies at the next start. Network, key, MCP and program keys are not editable t
 | `codex_thread_titles`, `codex_compaction_cache` | off | See [Codex CLI](#the-responses-api-and-codex-cli). |
 | `mcp_servers`, `mcp` | none | See [Tools from MCP servers](#tools-from-mcp-servers). |
 
+#### Keep part of a model file in RAM (Linux, off by default)
+
+On a drive whose sustained reads slow down, an optional file-cache pin can keep part of a GGUF shard in RAM
+between engine unloads and reloads. It belongs to the **server**: `/unload` and idle unload leave it resident;
+stopping the server releases it. It is not a tensor cache and needs no model-specific weight offsets.
+
+Set these keys outside `args` in the run config, or edit them in the web page's Model settings:
+
+```json
+"model_file_cache_gib": 30,
+"model_file_cache_shard": 0,
+"model_file_cache_headroom_gib": 6
+```
+
+The budget is in GiB (1024 cubed bytes). Zero or an absent budget disables the feature. Shard `0` selects the last
+shard of the GGUF named by `--native` or `--model`; `1`, `2`, etc. select a particular shard. An unsharded model is
+shard `1`. The server pins the selected file's prefix, up to the budget or file size, whichever is smaller; it does
+not spread the remaining budget to other shards. A different model uses its own filenames automatically. Whether
+a chosen prefix contains weights the loader uses depends on that model's file layout.
+
+The equivalent server overrides are `--model-file-cache-gib 30 --model-file-cache-shard 0`. Settings changes take
+effect after a **server restart**, not `/unload` followed by `/load`. The pin fills before starting the engine,
+including lazy starts. A failed fill releases all pages and reports the error instead of claiming a working cache.
+
+The server needs a sufficient `RLIMIT_MEMLOCK` (for a systemd service, e.g. `LimitMEMLOCK=32212254720` for 30 GiB).
+It never raises privileges or changes the system limit. The headroom is a fill-time check, not a reservation for the
+engine's later allocations. This cache is **additional** to the engine's RAM arena: allow space for both. Linux
+host memory and the current cgroup-v2 memory allowance are checked before filling. Stopping the server always
+unlocks the pages; it does not evict them from the ordinary page cache.
+
+Buffered reads and file mappings can use these pages. `O_DIRECT` reads bypass them. No speedup is established by
+enabling the setting: compare startup times and physical disk reads on the same model and hardware. The initial
+fill still reads the chosen bytes from disk, and replacing the model files requires a server restart to pin the new files.
+
+
 ### Streaming and tool calls
 
 - With `"stream": true` everything arrives as it is made: thinking, answer and tool calls (the tool's name first, then its

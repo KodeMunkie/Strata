@@ -83,6 +83,7 @@ from serve import owner_guard  # noqa: E402
 from serve import launch_identity  # noqa: E402
 from serve import logit_bias as bias_api  # noqa: E402
 from serve import lifeline  # noqa: E402
+from serve import model_file_cache  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json, extract_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
@@ -9483,6 +9484,13 @@ def tool_call_recovery_setting(cfg: dict) -> bool:
 
 
 def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> int:
+    # The API server owns this mapping. Engine unload/restart must not release it.
+    with model_file_cache.ModelFileCache() as file_cache:
+        return _main(argv, lifecycle_event=lifecycle_event, interrupt_exit_code=interrupt_exit_code,
+                     file_cache=file_cache)
+
+
+def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0, file_cache) -> int:
     try:                                               # files made by a run as administrator still belong to the user
         from strata_control import private_files as _pf
         _pf.adopt_user_defaults()
@@ -9504,6 +9512,10 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     ap.add_argument("--engine", choices=["mock", "strata"], default="mock")
     ap.add_argument("--config", help="strata engine config (JSON: exe, args, cwd, tokenizer, model_name), "
                                      "written by setup.py")
+    ap.add_argument("--model-file-cache-gib", type=int, default=None,
+                    help="Linux: pin this many GiB of a model shard in RAM until the server exits (0: off)")
+    ap.add_argument("--model-file-cache-shard", type=int, default=None,
+                    help="model shard number to pin (1-based; 0: last shard)")
     ap.add_argument("--host", default=None,
                     help="the address to listen on: 127.0.0.1 = this PC only (the default), 0.0.0.0 = also other devices "
                          "on your network, :: = all IPv6 interfaces (set an API key); also \"host\" in the config")
@@ -9608,6 +9620,13 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         ap.error("--shutdown-timeout must be in 0..300 seconds")
     config_bytes = Path(a.config).read_bytes() if a.config else b""
     cfg = parse_config_text(config_bytes.decode("utf-8-sig"), a.config) if a.config else {}   # Notepad adds a BOM
+    for key in ("model_file_cache_gib", "model_file_cache_shard"):
+        if getattr(a, key) is not None:
+            cfg[key] = getattr(a, key)
+    try:
+        model_file_cache.settings(cfg)
+    except ValueError as exc:
+        ap.error(str(exc))
     split_joined_args(cfg)
     if a.config and a.engine == "strata":
         cfg = apply_saved_tuning(cfg)
@@ -9722,6 +9741,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         if not cfg:
             ap.error("--engine strata needs --config")
         cfg = apply_vision_defaults(with_component_engine(cfg))
+        if cfg.get("model_file_cache_gib"):
+            try:
+                file_cache.start(cfg, engine_args(cfg, announce=False))
+            except (OSError, ValueError) as exc:
+                ap.error(f"model file cache: {exc}")
         vision = None
         # The engine's own environment. It carries the offline policy too: an engine that fetched a
         # missing shard or a plugin would break the promise the flag makes.

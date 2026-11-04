@@ -33,6 +33,11 @@ EDITABLE = [
      "Where a non-default reasoning effort goes: start (the default) or end (keeps the cache when it changes)"),
     ("aliases", "names", "Other model names the server lists and answers to (comma-separated)"),
     ("idle_unload_s", "num>=0", "Unload the model after this many seconds without requests (0 or empty: never)"),
+    ("model_file_cache_gib", "int>=0", "Linux: pin up to this many GiB of a GGUF shard in RAM across engine unloads "
+     "until the server exits (0 or empty: off; requires enough RAM and a raised memory-lock limit)"),
+    ("model_file_cache_shard", "int>=0", "GGUF shard to cache, numbered from 1 (0 or empty: last shard)"),
+    ("model_file_cache_headroom_gib", "int>=0", "Available RAM to leave while filling the file cache (empty: 6 GiB; "
+     "does not include RAM the engine will allocate afterward)"),
     ("mtp", "bool", "Draft layer (MTP): off starts the engine without it (about 1 GB less graphics memory, slower words per second); "
                     "empty or on: as installed"),
     ("lazy_load", "bool", "Start without loading the model; the first request loads it (text only)"),
@@ -89,6 +94,10 @@ def check(key: str, v, cfg: dict):
         raise ValueError(f"{key!r} cannot be changed here (only the keys the Settings view lists)")
     if v is None:
         return None
+    if key.startswith("model_file_cache_"):
+        from serve.model_file_cache import settings
+        settings({key: v})
+        return v
     kind = SPEC[key]
     k = kind[0] if isinstance(kind, tuple) else kind
     if k == "bool":
